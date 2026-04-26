@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ReadOmni Auto-Workflow
 // @namespace    http://tampermonkey.net/
-// @version      1.13
+// @version      1.14
 // @description  Automates the ReadOmni thread creation, glossary, and renaming workflow.
 // @author       You
 // @match        https://app.readomni.com/*
@@ -315,22 +315,42 @@
 
         if (document.getElementById('ro-workflow-btn')) return;
 
-        // Try to locate the submit button inside the form area
-        const submitBtn = document.querySelector('button[type="submit"]');
-        if (submitBtn && submitBtn.parentElement) {
-            const container = submitBtn.parentElement;
+        const btn = document.createElement('button');
+        btn.id = 'ro-workflow-btn';
+        // Hide the text on very small screens to ensure it doesn't break header styling, but show on normal/desktop
+        btn.innerHTML = '🚀<span class="hidden sm:inline ml-2">Workflow</span>';
 
-            const btn = document.createElement('button');
-            btn.id = 'ro-workflow-btn';
-            btn.innerHTML = '🚀 Workflow';
+        // Native OmniTranslate CSS classes to perfectly blend with the header icons
+        btn.className = "inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-[color,box-shadow] disabled:pointer-events-none disabled:opacity-50 ring-ring/10 dark:ring-ring/20 outline-ring/50 focus-visible:ring-4 focus-visible:outline-1 bg-secondary text-secondary-foreground shadow-xs hover:bg-secondary/80 h-9 px-3 shrink-0";
+        btn.type = "button";
+        btn.onclick = triggerFilePickerAndStart;
 
-            // Native OmniTranslate CSS classes so it blends perfectly
-            btn.className = "inline-flex items-center justify-center gap-2 whitespace-nowrap text-xs font-medium transition-[color,box-shadow] ring-ring/10 dark:ring-ring/20 outline-ring/50 focus-visible:ring-4 focus-visible:outline-1 bg-secondary text-secondary-foreground shadow-xs hover:bg-secondary/80 h-7 px-3 rounded-md shrink-0";
-            btn.type = "button";
-            btn.onclick = triggerFilePickerAndStart;
+        // Find the top-right header icon container
+        // 1. Try to find the bell icon
+        let container = document.querySelector('.lucide-bell')?.closest('button')?.parentElement;
 
-            // Insert it right before the submit button
-            container.insertBefore(btn, submitBtn);
+        // 2. Try the right-side flex container inside the mobile header
+        if (!container) {
+            container = document.querySelector('header .flex-shrink-0.flex-row.items-center');
+        }
+
+        // 3. Last resort fallback (e.g. desktop specific layouts if header isn't matched)
+        if (!container) {
+            container = document.querySelector('header')?.lastElementChild;
+        }
+
+        if (container && container.classList.contains('flex')) {
+            // Insert it at the start of the icon group
+            container.insertBefore(btn, container.firstChild);
+        } else {
+            // Ultimate fallback if the UI radically changes: Floating top-right button
+            Object.assign(btn.style, {
+                position: 'fixed',
+                top: '12px',
+                right: '100px', // Leaves room for native icons
+                zIndex: '999999'
+            });
+            document.body.appendChild(btn);
         }
     }
 
