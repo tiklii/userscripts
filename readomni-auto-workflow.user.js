@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ReadOmni Auto-Workflow
 // @namespace    http://tampermonkey.net/
-// @version      1.11
+// @version      1.13
 // @description  Automates the ReadOmni thread creation, glossary, and renaming workflow.
 // @author       You
 // @match        https://app.readomni.com/*
@@ -12,6 +12,12 @@
     'use strict';
 
     const SAMPLE_TEXT = `第99887章 “牌位”\n\n诸葛真人看到了荀老先生那熟悉的，严格的字迹，头皮都是麻的。\n\n他有一种毕业多年了，突然做了个梦，回到了弟子时代，被“教习”耳提面命的紧张和局促感。`;
+
+    // State Keys for SessionStorage (Allows recovery after a hard refresh)
+    const STATE_KEY = 'ro_wf_state';
+    const CSV_KEY = 'ro_wf_csv';
+    const NAME_KEY = 'ro_wf_name';
+    const RELOAD_KEY = 'ro_wf_reloaded';
 
     // --- HELPER FUNCTIONS ---
 
@@ -58,12 +64,13 @@
         element.dispatchEvent(event);
     }
 
-    // Forces stubborn React UI components (like dropdowns/tabs) to trigger
+    // Forces stubborn React/Radix UI components (like dropdowns/tabs/ellipsis) to trigger
     function reactClick(element) {
         if (!element) return;
-        element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-        element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-        element.click();
+        // Radix UI menus often require pointer events rather than just mouse events
+        ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(type => {
+            element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0 }));
+        });
     }
 
     async function processCsvFiles(files) {
@@ -81,16 +88,27 @@
     }
 
     function getNextThreadName(filename) {
-        let namePart = filename.replace(/^glossary-\d+of\d+-/i, '').replace(/\.csv$/i, '');
-        const match = namePart.match(/(.*?)(\d+)$/);
+        // Strip out the .csv extension
+        let namePart = filename.replace(/\.csv$/i, '');
+        // Strip out 'glossary-' and an optional '1of2-' part
+        namePart = namePart.replace(/^glossary-(?:\d+of\d+-)?/i, '');
 
+        // Extract text and trailing numbers
+        const match = namePart.match(/(.*?)(\d+)$/);
         if (match) {
             let textPart = match[1];
             let numberPart = parseInt(match[2], 10);
             return textPart + (numberPart + 1);
         } else {
-            return namePart + "1";
+            return namePart + "1"; // e.g., qingshan -> qingshan1
         }
+    }
+
+    function clearWorkflowState() {
+        sessionStorage.removeItem(STATE_KEY);
+        sessionStorage.removeItem(CSV_KEY);
+        sessionStorage.removeItem(NAME_KEY);
+        sessionStorage.removeItem(RELOAD_KEY);
     }
 
     // --- MAIN WORKFLOW ---
@@ -102,6 +120,10 @@
             const nextName = getNextThreadName(files[0].name);
             const combinedCsv = await processCsvFiles(files);
 
+            // Save variables to session storage so it survives page reloads
+            sessionStorage.setItem(CSV_KEY, combinedCsv);
+            sessionStorage.setItem(NAME_KEY, nextName);
+
             // 1. Paste text and submit
             const mainTextarea = await waitForElement('textarea');
             setReactInputValue(mainTextarea, SAMPLE_TEXT);
@@ -109,105 +131,160 @@
             const submitBtn = await waitForElement('button[type="submit"]');
             reactClick(submitBtn);
 
-            // 2. Settings Gear
-            const settingsBtn = await waitForElement('svg.lucide-sliders-horizontal');
-            reactClick(settingsBtn.closest('button') || settingsBtn.parentElement);
-            await sleep(300);
+            // Set state and jump into the state machine
+            sessionStorage.setItem(STATE_KEY, 'STEP_1');
+            doWorkflow();
 
-            // 3. Appearance -> Conditional Font Logic
-            const appearanceBtn = await waitForElement('button', 'Appearance');
-            reactClick(appearanceBtn);
-            await sleep(300);
+        } catch (error) {
+            console.error("Workflow Start Error:", error);
+            alert("Workflow stopped due to an error. Check console.");
+            clearWorkflowState();
+        }
+    }
 
-            const fontInput = await waitForElement('input[inputmode="numeric"]');
-            const currentFontSize = parseInt(fontInput.value, 10);
+    // This handles the process progressively, resuming gracefully if the page gets reloaded
+    async function doWorkflow() {
+        let state = sessionStorage.getItem(STATE_KEY);
+        if (!state) return;
 
-            // Only click the plus button if the current font is strictly less than 18
-            if (!isNaN(currentFontSize) && currentFontSize < 18) {
-                console.log(`Current font size is ${currentFontSize}. Adjusting to 18 using + button.`);
+        const combinedCsv = sessionStorage.getItem(CSV_KEY);
+        const nextName = sessionStorage.getItem(NAME_KEY);
 
-                // Find the plus icon and its parent button
-                const plusIcon = await waitForElement('svg.lucide-plus');
-                const plusBtn = plusIcon.closest('button');
+        try {
+            if (state === 'STEP_1') {
+                console.log("Running STEP_1 (Waiting for thread page to load)...");
+                let reloaded = sessionStorage.getItem(RELOAD_KEY);
+                let threadNameSpan;
 
-                // Calculate how many times to click
-                const clicksNeeded = 18 - currentFontSize;
-
-                for (let i = 0; i < clicksNeeded; i++) {
-                    reactClick(plusBtn);
-                    await sleep(100); // Small pause between clicks for state updates
+                try {
+                    // Give it 5s standard, or 30s if we already refreshed due to a hang
+                    const timeout = reloaded === 'true' ? 30000 : 5000;
+                    // The thread name appears when the new page fully renders
+                    threadNameSpan = await waitForElement('span.truncate.font-medium', null, false, timeout);
+                    sessionStorage.removeItem(RELOAD_KEY);
+                } catch (e) {
+                    if (reloaded !== 'true') {
+                        console.log("Hanging detected! Executing a hard refresh...");
+                        sessionStorage.setItem(RELOAD_KEY, 'true');
+                        location.reload(true);
+                        return; // Stop execution; page will reload and jump back here natively
+                    } else {
+                        throw new Error("Timeout waiting for thread page to load even after reload.");
+                    }
                 }
-                await sleep(300); // Give React state a moment to settle
-            } else {
-                console.log(`Current font size is ${currentFontSize}. No changes needed.`);
+
+                // 2. Settings Gear
+                const settingsBtn = await waitForElement('svg.lucide-sliders-horizontal');
+                reactClick(settingsBtn.closest('button') || settingsBtn.parentElement);
+                await sleep(300);
+
+                // 3. Appearance -> Conditional Font Logic
+                const appearanceBtn = await waitForElement('button', 'Appearance');
+                reactClick(appearanceBtn);
+                await sleep(300);
+
+                const fontInput = await waitForElement('input[inputmode="numeric"]');
+                const currentFontSize = parseInt(fontInput.value, 10);
+
+                if (!isNaN(currentFontSize) && currentFontSize < 18) {
+                    console.log(`Adjusting font size to 18.`);
+                    const plusIcon = await waitForElement('svg.lucide-plus');
+                    const plusBtn = plusIcon.closest('button');
+                    const clicksNeeded = 18 - currentFontSize;
+
+                    for (let i = 0; i < clicksNeeded; i++) {
+                        reactClick(plusBtn);
+                        await sleep(100);
+                    }
+                    await sleep(300);
+                }
+
+                // Close the settings modal
+                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+
+                // 4. Click generated thread name to go to the Library
+                // Grab it again just in case DOM shifted
+                threadNameSpan = await waitForElement('span.truncate.font-medium');
+                reactClick(threadNameSpan);
+
+                sessionStorage.setItem(STATE_KEY, 'STEP_2');
+                state = 'STEP_2';
+                await sleep(2000);
             }
 
-            // Close the settings modal
-            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+            if (state === 'STEP_2') {
+                console.log("Running STEP_2 (Navigating to Context)...");
+                // 5. Go to Context
+                const contextLink = await waitForElement('a[href*="/context?thread="]');
+                contextLink.click();
 
-            // 4. Click generated thread name to go to the Library
-            const threadNameSpan = await waitForElement('span.truncate.font-medium');
-            reactClick(threadNameSpan);
+                sessionStorage.setItem(STATE_KEY, 'STEP_3');
+                state = 'STEP_3';
+                await sleep(2000);
+            }
 
-            // Wait for the library page to fully mount and URL to update
-            await sleep(2000);
+            if (state === 'STEP_3') {
+                console.log("Running STEP_3 (Injecting Bulk Words)...");
+                // 6. Click Add -> Bulk
+                const addBtn = await waitForElement('button', 'Add', true);
+                reactClick(addBtn);
+                await sleep(500);
 
-            // 5. Go to Context (Explicitly targeting the a-tag with the thread ID)
-            const contextLink = await waitForElement('a[href*="/context?thread="]');
-            contextLink.click();
+                const bulkTab = await waitForElement('button, [role="tab"]', 'Bulk');
+                reactClick(bulkTab);
+                await sleep(500);
 
-            // CRITICAL: Wait for React Router to parse the ?thread= URL parameter.
-            await sleep(2000);
+                // 7. Paste CSV and submit
+                const bulkTextarea = await waitForElement('textarea[name="input"]');
+                setReactInputValue(bulkTextarea, combinedCsv);
 
-            // 6. Click Add -> Bulk
-            const addBtn = await waitForElement('button', 'Add', true);
-            reactClick(addBtn);
-            await sleep(500);
+                const addTermsBtn = await waitForElement('button[type="submit"]', 'Add Terms');
+                reactClick(addTermsBtn);
 
-            const bulkTab = await waitForElement('button, [role="tab"]', 'Bulk');
-            reactClick(bulkTab);
-            await sleep(500);
+                // 8. Wait for saving, then go back
+                await sleep(1500);
+                window.history.back();
 
-            // 7. Paste CSV and submit
-            const bulkTextarea = await waitForElement('textarea[name="input"]');
-            setReactInputValue(bulkTextarea, combinedCsv);
+                sessionStorage.setItem(STATE_KEY, 'STEP_4');
+                state = 'STEP_4';
+                await sleep(1500);
+            }
 
-            const addTermsBtn = await waitForElement('button[type="submit"]', 'Add Terms');
-            reactClick(addTermsBtn);
+            if (state === 'STEP_4') {
+                console.log("Running STEP_4 (Renaming)...");
+                // 9. Wait for routing back to the Library page
+                await waitForElement('a[href*="/?thread="]', 'Add Translation');
 
-            // 8. Wait for saving, then go back
-            await sleep(1500);
-            window.history.back();
+                // 10. Rename Thread
+                const ellipsisIcon = await waitForElement('.lucide-ellipsis-vertical');
+                const ellipsisBtn = ellipsisIcon.closest('button') || ellipsisIcon.closest('[role="button"]') || ellipsisIcon.parentElement;
+                reactClick(ellipsisBtn);
+                await sleep(500);
 
-            // 9. Wait for routing back to the Library page
-            await sleep(1500);
-            await waitForElement('a[href*="/?thread="]', 'Add Translation');
+                const editItem = await waitForElement('[role="menuitem"], button, div', 'Edit', true);
+                reactClick(editItem);
+                await sleep(500);
 
-            // 10. Rename Thread
-            const ellipsisIcon = await waitForElement('.lucide-ellipsis-vertical');
-            const ellipsisBtn = ellipsisIcon.closest('button') || ellipsisIcon.closest('[role="button"]') || ellipsisIcon.parentElement;
-            reactClick(ellipsisBtn);
-            await sleep(500);
+                const titleInput = await waitForElement('input[name="title"]');
+                setReactInputValue(titleInput, nextName);
 
-            const editItem = await waitForElement('[role="menuitem"], button, div', 'Edit', true);
-            reactClick(editItem);
-            await sleep(500);
+                const saveChangesBtn = await waitForElement('button[type="submit"]', 'Save changes');
+                reactClick(saveChangesBtn);
 
-            const titleInput = await waitForElement('input[name="title"]');
-            setReactInputValue(titleInput, nextName);
+                await sleep(1000);
+                const addTranslationAnchor = await waitForElement('a[href*="/?thread="]', 'Add Translation');
+                addTranslationAnchor.click();
 
-            const saveChangesBtn = await waitForElement('button[type="submit"]', 'Save changes');
-            reactClick(saveChangesBtn);
+                console.log("Workflow Complete! Thread Renamed to: " + nextName);
 
-            await sleep(1000);
-            const addTranslationAnchor = await waitForElement('a[href*="/?thread="]', 'Add Translation');
-            addTranslationAnchor.click();
-
-            console.log("Workflow Complete! Thread Renamed to: " + nextName);
+                // Job done, wipe memory clean
+                clearWorkflowState();
+            }
 
         } catch (error) {
             console.error("Workflow Error:", error);
             alert("Workflow stopped due to an error. Check console.");
+            clearWorkflowState();
         }
     }
 
@@ -229,6 +306,7 @@
     }
 
     function injectTriggerButton() {
+        // Only run on the homepage
         if (window.location.pathname !== '/' || window.location.search !== '') {
             const existingBtn = document.getElementById('ro-workflow-btn');
             if (existingBtn) existingBtn.remove();
@@ -237,30 +315,29 @@
 
         if (document.getElementById('ro-workflow-btn')) return;
 
-        const btn = document.createElement('button');
-        btn.id = 'ro-workflow-btn';
-        btn.textContent = '🚀 Run Workflow';
-        Object.assign(btn.style, {
-            position: 'fixed',
-            bottom: '20px',
-            right: '20px',
-            padding: '12px 20px',
-            backgroundColor: '#000',
-            color: '#fff',
-            border: 'none',
-            borderRadius: '8px',
-            zIndex: '999999',
-            cursor: 'pointer',
-            fontWeight: 'bold',
-            boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
-        });
+        // Try to locate the submit button inside the form area
+        const submitBtn = document.querySelector('button[type="submit"]');
+        if (submitBtn && submitBtn.parentElement) {
+            const container = submitBtn.parentElement;
 
-        btn.onclick = triggerFilePickerAndStart;
-        document.body.appendChild(btn);
+            const btn = document.createElement('button');
+            btn.id = 'ro-workflow-btn';
+            btn.innerHTML = '🚀 Workflow';
+
+            // Native OmniTranslate CSS classes so it blends perfectly
+            btn.className = "inline-flex items-center justify-center gap-2 whitespace-nowrap text-xs font-medium transition-[color,box-shadow] ring-ring/10 dark:ring-ring/20 outline-ring/50 focus-visible:ring-4 focus-visible:outline-1 bg-secondary text-secondary-foreground shadow-xs hover:bg-secondary/80 h-7 px-3 rounded-md shrink-0";
+            btn.type = "button";
+            btn.onclick = triggerFilePickerAndStart;
+
+            // Insert it right before the submit button
+            container.insertBefore(btn, submitBtn);
+        }
     }
 
+    // Watch the DOM to continually re-inject the button as React navigates
     let lastUrl = location.href;
     new MutationObserver(() => {
+        injectTriggerButton();
         const url = location.href;
         if (url !== lastUrl) {
             lastUrl = url;
@@ -268,6 +345,12 @@
         }
     }).observe(document, {subtree: true, childList: true});
 
+    // Initial check
     injectTriggerButton();
+
+    // Trigger workflow recovery on page load (handles the 5s hard refresh seamlessly)
+    if (sessionStorage.getItem(STATE_KEY)) {
+        setTimeout(doWorkflow, 1000); // 1-second delay lets DOM/React settle after a reload
+    }
 
 })();
