@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ReadOmni Auto-Workflow
 // @namespace    http://tampermonkey.net/
-// @version      1.14
+// @version      1.15
 // @description  Automates the ReadOmni thread creation, glossary, and renaming workflow.
 // @author       You
 // @match        https://app.readomni.com/*
@@ -157,8 +157,8 @@
                 let threadNameSpan;
 
                 try {
-                    // Give it 5s standard, or 30s if we already refreshed due to a hang
-                    const timeout = reloaded === 'true' ? 30000 : 5000;
+                    // Give it 10s standard, or 30s if we already refreshed due to a hang
+                    const timeout = reloaded === 'true' ? 30000 : 10000;
                     // The thread name appears when the new page fully renders
                     threadNameSpan = await waitForElement('span.truncate.font-medium', null, false, timeout);
                     sessionStorage.removeItem(RELOAD_KEY);
