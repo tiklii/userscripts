@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ReadOmni Auto-Workflow
 // @namespace    http://tampermonkey.net/
-// @version      1.15
+// @version      1.16
 // @description  Automates the ReadOmni thread creation, glossary, and renaming workflow.
 // @author       You
 // @match        https://app.readomni.com/*
@@ -90,6 +90,8 @@
     function getNextThreadName(filename) {
         // Strip out the .csv extension
         let namePart = filename.replace(/\.csv$/i, '');
+        // Strip out OS added duplicate numbers like " (1)", " (2)" at the end
+        namePart = namePart.replace(/\s*\(\d+\)$/, '');
         // Strip out 'glossary-' and an optional '1of2-' part
         namePart = namePart.replace(/^glossary-(?:\d+of\d+-)?/i, '');
 
