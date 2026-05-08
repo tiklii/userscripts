@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ReadOmni Sequential ZIP & EPUB Downloader
 // @namespace    http://tampermonkey.net/
-// @version      20.1
-// @description  Permanent Bottom Nav, Faster Watchdog Timeout, Pro Reader UI, and Preserved Chapter Titles.
+// @version      20.2
+// @description  Permanent Bottom Nav, Faster Watchdog Timeout, Pro Reader UI, Preserved Chapter Titles, and Auto Raw Extraction.
 // @author       You
 // @match        https://app.readomni.com/*
 // @require      https://cdn.jsdelivr.net/npm/@zip.js/zip.js@2.8.26/dist/zip.min.js
@@ -474,11 +474,12 @@
     }
 
     // --- EPUB GENERATOR ---
-    async function generateEpubBlob(state, reversedFiles) {
+    async function generateEpubBlob(state, reversedFiles, mode = 'tl') {
         const blobWriter = new zip.BlobWriter("application/epub+zip");
         const zipWriter = new zip.ZipWriter(blobWriter);
 
-        const title = state.threadName;
+        const baseTitle = state.threadName;
+        const title = mode === 'raw' ? `${baseTitle} (Raws Only)` : (mode === 'combined' ? `${baseTitle} (Combined)` : baseTitle);
         const uuid = "urn:uuid:" + generateUUID();
 
         await zipWriter.add("mimetype", new zip.TextReader("application/epub+zip"), { level: 0 });
@@ -490,25 +491,27 @@
         let navMap = ``;
         let playOrder = 1;
 
-        for (let i = 0; i < reversedFiles.length; i++) {
-            const file = reversedFiles[i];
-            const fileNum = String(i + 1).padStart(3, '0');
-            const chapterId = `chapter_trans_${fileNum}`;
-            const chapterFilename = `Text/${chapterId}.html`;
+        if (mode === 'tl' || mode === 'combined') {
+            for (let i = 0; i < reversedFiles.length; i++) {
+                const file = reversedFiles[i];
+                const fileNum = String(i + 1).padStart(3, '0');
+                const chapterId = `chapter_trans_${fileNum}`;
+                const chapterFilename = `Text/${chapterId}.html`;
 
-            const safeTitle = escapeXml(`[${String(i + 1).padStart(2, '0')}] ${file.rawTitle}`);
-            const safeContent = file.content.replace(/<br\s*\/?>/gi, '<br/>').replace(/<hr\s*\/?>/gi, '<hr/>');
+                const safeTitle = escapeXml(`[${String(i + 1).padStart(2, '0')}] ${file.rawTitle}`);
+                const safeContent = file.content.replace(/<br\s*\/?>/gi, '<br/>').replace(/<hr\s*\/?>/gi, '<hr/>');
 
-            const chapterHtml = `<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head><title>${safeTitle}</title>\n<style>body { font-family: sans-serif; line-height: 1.6; padding: 2% 5%; } h1 { text-align: center; margin-bottom: 1.5em; font-size: 1.5em; } p { margin-bottom: 1em; } blockquote { border-left: 3px solid #ccc; padding-left: 1em; margin-left: 0; font-style: italic; }</style>\n</head>\n<body>\n<h1>${safeTitle}</h1>\n${safeContent}\n</body>\n</html>`;
+                const chapterHtml = `<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head><title>${safeTitle}</title>\n<style>body { font-family: sans-serif; line-height: 1.6; padding: 2% 5%; } h1 { text-align: center; margin-bottom: 1.5em; font-size: 1.5em; } p { margin-bottom: 1em; } blockquote { border-left: 3px solid #ccc; padding-left: 1em; margin-left: 0; font-style: italic; }</style>\n</head>\n<body>\n<h1>${safeTitle}</h1>\n${safeContent}\n</body>\n</html>`;
 
-            await zipWriter.add(`OEBPS/${chapterFilename}`, new zip.TextReader(chapterHtml));
-            manifest += `<item id="${chapterId}" href="${chapterFilename}" media-type="application/xhtml+xml"/>\n`;
-            spine += `<itemref idref="${chapterId}"/>\n`;
-            navMap += `<navPoint id="navPoint-${playOrder}" playOrder="${playOrder}"><navLabel><text>${safeTitle}</text></navLabel><content src="${chapterFilename}"/></navPoint>\n`;
-            playOrder++;
+                await zipWriter.add(`OEBPS/${chapterFilename}`, new zip.TextReader(chapterHtml));
+                manifest += `<item id="${chapterId}" href="${chapterFilename}" media-type="application/xhtml+xml"/>\n`;
+                spine += `<itemref idref="${chapterId}"/>\n`;
+                navMap += `<navPoint id="navPoint-${playOrder}" playOrder="${playOrder}"><navLabel><text>${safeTitle}</text></navLabel><content src="${chapterFilename}"/></navPoint>\n`;
+                playOrder++;
+            }
         }
 
-        if (state.includeRaws) {
+        if (mode === 'raw' || mode === 'combined') {
             for (let i = 0; i < reversedFiles.length; i++) {
                 const file = reversedFiles[i];
                 if (!file.rawContent) continue;
@@ -540,7 +543,7 @@
     }
 
     // --- UI OVERLAY ---
-    function showFinalScreen(zipUrl, zipFilename, epubUrl, epubFilename, mergedUrl, mergedFilename, logUrl, logFilename, threadUrl, urlsToRevoke) {
+    function showFinalScreen(dl, threadUrl, urlsToRevoke) {
         const existing = document.getElementById('ro-cancel-btn');
         if (existing) existing.remove();
 
@@ -555,20 +558,24 @@
         let html = `<h1 style="margin: 0; font-size: 24px;">🎉 Extraction Complete</h1>`;
         html += `<p style="margin: 0 0 10px 0; color: #aaa; text-align: center; max-width: 80%; font-size: 14px;">Choose your preferred download format below:</p>`;
 
-        if (epubUrl) {
-            html += `<a href="${epubUrl}" download="${epubFilename}" style="display: block; padding: 12px 30px; background-color: #8b5cf6; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">📖 Save EPUB eBook</a>`;
+        if (dl.epubTl && dl.epubRaw && dl.epubCombined) {
+            html += `<a href="${dl.epubCombined.url}" download="${dl.epubCombined.name}" style="display: block; padding: 12px 30px; background-color: #8b5cf6; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">📖 Save EPUB (Combined)</a>`;
+            html += `<a href="${dl.epubTl.url}" download="${dl.epubTl.name}" style="display: block; padding: 12px 30px; background-color: #9333ea; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">📖 Save EPUB (Translated Only)</a>`;
+            html += `<a href="${dl.epubRaw.url}" download="${dl.epubRaw.name}" style="display: block; padding: 12px 30px; background-color: #a855f7; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">📖 Save EPUB (Raws Only)</a>`;
+        } else if (dl.epubTl) {
+            html += `<a href="${dl.epubTl.url}" download="${dl.epubTl.name}" style="display: block; padding: 12px 30px; background-color: #8b5cf6; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">📖 Save EPUB eBook</a>`;
         }
 
-        if (mergedUrl) {
-            html += `<a href="${mergedUrl}" download="${mergedFilename}" style="display: block; padding: 12px 30px; background-color: #3b82f6; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">📱 Save Webnovel App (.html)</a>`;
+        if (dl.merged) {
+            html += `<a href="${dl.merged.url}" download="${dl.merged.name}" style="display: block; padding: 12px 30px; background-color: #3b82f6; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">📱 Save Webnovel App (.html)</a>`;
         }
 
-        if (zipUrl) {
-            html += `<a href="${zipUrl}" download="${zipFilename}" style="display: block; padding: 12px 30px; background-color: #10b981; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">📦 Save ZIP Archive</a>`;
+        if (dl.zip) {
+            html += `<a href="${dl.zip.url}" download="${dl.zip.name}" style="display: block; padding: 12px 30px; background-color: #10b981; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">📦 Save ZIP Archive</a>`;
         }
 
-        if (logUrl) {
-            html += `<a href="${logUrl}" download="${logFilename}" style="display: block; padding: 12px 30px; background-color: #4b5563; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">🛠 Save Debug Log</a>`;
+        if (dl.log) {
+            html += `<a href="${dl.log.url}" download="${dl.log.name}" style="display: block; padding: 12px 30px; background-color: #4b5563; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">🛠 Save Debug Log</a>`;
         }
 
         html += `<button id="ro-return-btn" style="margin-top: 15px; padding: 10px 24px; background: transparent; border: 2px solid #555; color: white; border-radius: 8px; font-size: 14px; cursor: pointer;">Return to Library</button>`;
@@ -591,24 +598,23 @@
         updateCancelButtonText("Generating Files...");
         logDebug(state, `Preparing downloads. Total files collected: ${state.files ? state.files.length : 0}`);
 
-        let logUrl = null, epubUrl = null, zipUrl = null, mergedUrl = null;
-        let logFilename = `readomni_debug_${new Date().getTime()}.txt`;
+        let dl = {};
+        const dateStr = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
 
         if (state.logs && state.logs.length > 0) {
-            const logContent = "--- READOMNI DEBUG LOG v20.1 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
-            logUrl = URL.createObjectURL(new Blob([logContent], { type: 'text/plain' }));
+            const logContent = "--- READOMNI DEBUG LOG v20.2 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
+            dl.log = { url: URL.createObjectURL(new Blob([logContent], { type: 'text/plain' })), name: `readomni_debug_${new Date().getTime()}.txt` };
         }
 
         if (!state.files || state.files.length === 0) {
-            showFinalScreen(null, null, null, null, null, null, logUrl, logFilename, state.threadUrl, [logUrl].filter(Boolean));
+            showFinalScreen(dl, state.threadUrl, dl.log ? [dl.log.url] : []);
             return;
         }
 
         const reversedFiles = [...state.files].reverse();
-        const dateStr = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
+        const hasRaws = reversedFiles.some(f => f.rawContent);
 
         // --- WEBNOVEL HTML GENERATION ---
-        let mergedFilename = `${state.threadName}_Reader_${dateStr}.html`;
         try {
             let webnovelChapters = reversedFiles.map((f, i) => {
                 const fileNum = String(i + 1).padStart(2, '0');
@@ -619,24 +625,25 @@
                 };
             });
             let fullMergedHTML = generateWebnovelHTML(state.threadName, webnovelChapters);
-            mergedUrl = URL.createObjectURL(new Blob([fullMergedHTML], { type: 'text/html' }));
+            dl.merged = { url: URL.createObjectURL(new Blob([fullMergedHTML], { type: 'text/html' })), name: `${state.threadName}_Reader_${dateStr}.html` };
         } catch (e) {
             logDebug(state, `Merged HTML Error: ${e.message}`);
         }
 
         // --- EPUB GENERATION ---
-        let epubFilename = `${state.threadName}_${dateStr}.epub`;
         if (typeof zip !== 'undefined') {
             try {
-                const epubBlob = await generateEpubBlob(state, reversedFiles);
-                epubUrl = URL.createObjectURL(epubBlob);
+                dl.epubTl = { url: URL.createObjectURL(await generateEpubBlob(state, reversedFiles, 'tl')), name: `${state.threadName}_TL_${dateStr}.epub` };
+                if (hasRaws) {
+                    dl.epubRaw = { url: URL.createObjectURL(await generateEpubBlob(state, reversedFiles, 'raw')), name: `${state.threadName}_RAW_${dateStr}.epub` };
+                    dl.epubCombined = { url: URL.createObjectURL(await generateEpubBlob(state, reversedFiles, 'combined')), name: `${state.threadName}_Combined_${dateStr}.epub` };
+                }
             } catch (e) {
                 logDebug(state, `EPUB Generation Error: ${e.message}`);
             }
         }
 
         // --- ZIP GENERATION ---
-        let zipFilename = `${state.threadName}_${dateStr}.zip`;
         if (typeof zip !== 'undefined') {
             updateCancelButtonText("Compressing...");
             try {
@@ -653,21 +660,21 @@
                     let singleFileHTML = generateFullHTML(newTitle, file.content);
                     await zipWriter.add(`Translated/${safeFilename}.html`, new zip.TextReader(singleFileHTML));
 
-                    if (state.includeRaws && file.rawContent) {
+                    if (file.rawContent) {
                         let rawFileHTML = generateFullHTML(`${newTitle} - Raw`, file.rawContent);
                         await zipWriter.add(`Raw/${safeFilename} - Raw.html`, new zip.TextReader(rawFileHTML));
                     }
                 }
 
                 const blob = await zipWriter.close();
-                zipUrl = URL.createObjectURL(blob);
+                dl.zip = { url: URL.createObjectURL(blob), name: `${state.threadName}_${dateStr}.zip` };
             } catch (e) {
                 logDebug(state, `ZIP Compression Error: ${e.message}`);
             }
         }
 
-        const urlsToRevoke = [zipUrl, epubUrl, mergedUrl, logUrl].filter(Boolean);
-        showFinalScreen(zipUrl, zipFilename, epubUrl, epubFilename, mergedUrl, mergedFilename, logUrl, logFilename, state.threadUrl, urlsToRevoke);
+        const urlsToRevoke = Object.values(dl).map(item => item.url);
+        showFinalScreen(dl, state.threadUrl, urlsToRevoke);
     }
 
     // --- AUTOMATION SEQUENCE (SPA LOOP) ---
@@ -696,7 +703,7 @@
                 return;
             }
 
-            // Get pure title exactly as it appears (e.g., "Chapter 650: Nineteen")
+            // Get pure title exactly as it appears
             let rawTitleText = h1.textContent.trim();
             if (!rawTitleText) rawTitleText = 'Untitled';
 
@@ -708,26 +715,23 @@
             }
             let extractedHTMLBlocks = extractChapterHTMLBlocks();
 
-            // Extract Raw
+            // Always Attempt to Extract Raw (Without prompt)
             let rawHTMLBlocks = null;
-            if (state.includeRaws) {
-                let rawTab = Array.from(document.querySelectorAll('button[role="tab"]')).find(b => b.textContent.includes('Raw'));
-                if (rawTab) {
-                    if (rawTab.getAttribute('aria-selected') !== 'true') {
-                        fireOmniClick(rawTab);
-                        await sleep(400);
-                    }
-                    rawHTMLBlocks = extractChapterHTMLBlocks();
+            let rawTab = Array.from(document.querySelectorAll('button[role="tab"]')).find(b => b.textContent.includes('Raw'));
+            if (rawTab) {
+                if (rawTab.getAttribute('aria-selected') !== 'true') {
+                    fireOmniClick(rawTab);
+                    await sleep(400);
                 }
-                if (translatedTab) {
-                    fireOmniClick(translatedTab);
-                    await sleep(200);
-                }
+                rawHTMLBlocks = extractChapterHTMLBlocks();
+            }
+            if (translatedTab) {
+                fireOmniClick(translatedTab);
+                await sleep(200);
             }
 
             if (extractedHTMLBlocks && extractedHTMLBlocks.length > 0) {
                 state.retryCount = 0;
-                // Store the exact untouched title to preserve the format across EPUB/TOC
                 state.files.push({
                     rawTitle: rawTitleText,
                     content: extractedHTMLBlocks,
@@ -780,7 +784,6 @@
                 if (checkH1) {
                     let checkTitle = checkH1.textContent.trim();
                     if (!checkTitle) checkTitle = 'Untitled';
-                    // Wait until the exact title changes
                     if (checkTitle !== rawTitleText) {
                         contentChanged = true;
                         break;
@@ -805,8 +808,6 @@
         const confirmDownload = confirm("Start automated downloading?\n\nNote: You can cancel mid-way to package whatever has been collected.");
         if (!confirmDownload) return;
 
-        const includeRaws = confirm("Do you also want to extract the RAW chapters?\n\n(Click OK for Yes, Cancel for Translated Only)");
-
         const runId = Date.now().toString();
         sessionStorage.setItem(LOCK_KEY, runId);
 
@@ -815,14 +816,13 @@
             runId: runId,
             threadUrl: window.location.href,
             threadName: threadH1 && threadH1.textContent ? threadH1.textContent.trim().replace(/[\/\\?%*:|"<>]/g, '_') : 'ReadOmni_Thread',
- includeRaws: includeRaws,
  count: 1,
  retryCount: 0,
  files: [],
  logs: []
         };
 
-        logDebug(state, `--- NEW RUN INITIALIZED (V20.1) Raws: ${includeRaws} ---`);
+        logDebug(state, `--- NEW RUN INITIALIZED (V20.2) Auto-Extracting Raws ---`);
         localStorage.setItem(STATE_KEY, JSON.stringify(state));
 
         const runUrl = new URL(firstLink.href, window.location.origin);
