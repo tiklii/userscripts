@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ReadOmni Sequential ZIP & EPUB Downloader
 // @namespace    http://tampermonkey.net/
-// @version      20.2
-// @description  Permanent Bottom Nav, Faster Watchdog Timeout, Pro Reader UI, Preserved Chapter Titles, and Auto Raw Extraction.
+// @version      20.3
+// @description  Permanent Bottom Nav, Faster Watchdog Timeout, Pro Reader UI, Preserved Chapter Titles, Auto Raws, and Styled System Boxes.
 // @author       You
 // @match        https://app.readomni.com/*
 // @require      https://cdn.jsdelivr.net/npm/@zip.js/zip.js@2.8.26/dist/zip.min.js
@@ -88,7 +88,15 @@
         h1 { text-align: center; margin-top: 1em; margin-bottom: 1.5em; padding-bottom: 0.5em; border-bottom: 1px solid #eaeaea; font-size: 28px; }
         hr { border: 0; border-top: 1px solid #eaeaea; margin: 3em 0; }
         blockquote { border-left: 4px solid #d1d5db; padding-left: 1rem; margin-left: 0; color: #4b5563; font-style: italic; }
-        @media (prefers-color-scheme: dark) { body { background-color: #121212; color: #eee; } h1 { border-bottom: 1px solid #333; } hr { border-top: 1px solid #333; } blockquote { border-left-color: #4b5563; color: #9ca3af; } }
+        .box { border: 1px solid #eaeaea; background-color: #f4f4f5; border-radius: 8px; padding: 16px; margin: 24px 0; }
+        .box p:last-child { margin-bottom: 0; }
+        @media (prefers-color-scheme: dark) {
+            body { background-color: #121212; color: #eee; }
+            h1 { border-bottom: 1px solid #333; }
+            hr { border-top: 1px solid #333; }
+            blockquote { border-left-color: #4b5563; color: #9ca3af; }
+            .box { border-color: #333; background-color: #1f1f1f; }
+        }
         </style>
         </head>
         <body>
@@ -109,8 +117,8 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>${bookTitle}</title>
         <style>
-        :root { --bg: #fdfdfd; --text: #111; --border: #eaeaea; --btn-bg: #fff; --btn-hover: #f0f0f0; --accent: #8b5cf6; --raw: #ef4444; }
-        body.dark-mode { --bg: #121212; --text: #eee; --border: #333; --btn-bg: #1e1e1e; --btn-hover: #2a2a2a; }
+        :root { --bg: #fdfdfd; --text: #111; --border: #eaeaea; --btn-bg: #fff; --btn-hover: #f0f0f0; --accent: #8b5cf6; --raw: #ef4444; --box-bg: #f4f4f5; }
+        body.dark-mode { --bg: #121212; --text: #eee; --border: #333; --btn-bg: #1e1e1e; --btn-hover: #2a2a2a; --box-bg: #1f1f1f; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; transition: background 0.2s, color 0.2s; -webkit-tap-highlight-color: transparent;}
         .container { max-width: 800px; margin: 0 auto; min-height: 100vh; display: flex; flex-direction: column; }
 
@@ -139,6 +147,8 @@
         .chapter-body p { margin-bottom: 1.2em; }
         .chapter-body blockquote { border-left: 4px solid var(--accent); padding-left: 1rem; margin-left: 0; font-style: italic; opacity: 0.85; }
         .chapter-body hr { border: 0; border-top: 1px solid var(--border); margin: 3em 0; }
+        .box { border: 1px solid var(--border); background-color: var(--box-bg); border-radius: 8px; padding: 16px; margin: 24px 0; }
+        .box p:last-child { margin-bottom: 0; }
 
         /* Index View */
         .index-view { display: none; }
@@ -501,7 +511,7 @@
                 const safeTitle = escapeXml(`[${String(i + 1).padStart(2, '0')}] ${file.rawTitle}`);
                 const safeContent = file.content.replace(/<br\s*\/?>/gi, '<br/>').replace(/<hr\s*\/?>/gi, '<hr/>');
 
-                const chapterHtml = `<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head><title>${safeTitle}</title>\n<style>body { font-family: sans-serif; line-height: 1.6; padding: 2% 5%; } h1 { text-align: center; margin-bottom: 1.5em; font-size: 1.5em; } p { margin-bottom: 1em; } blockquote { border-left: 3px solid #ccc; padding-left: 1em; margin-left: 0; font-style: italic; }</style>\n</head>\n<body>\n<h1>${safeTitle}</h1>\n${safeContent}\n</body>\n</html>`;
+                const chapterHtml = `<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head><title>${safeTitle}</title>\n<style>body { font-family: sans-serif; line-height: 1.6; padding: 2% 5%; } h1 { text-align: center; margin-bottom: 1.5em; font-size: 1.5em; } p { margin-bottom: 1em; } blockquote { border-left: 3px solid #ccc; padding-left: 1em; margin-left: 0; font-style: italic; } .box { border: 1px solid #ccc; background-color: #f9f9f9; border-radius: 6px; padding: 1em; margin: 1.5em 0; } .box p:last-child { margin-bottom: 0; }</style>\n</head>\n<body>\n<h1>${safeTitle}</h1>\n${safeContent}\n</body>\n</html>`;
 
                 await zipWriter.add(`OEBPS/${chapterFilename}`, new zip.TextReader(chapterHtml));
                 manifest += `<item id="${chapterId}" href="${chapterFilename}" media-type="application/xhtml+xml"/>\n`;
@@ -523,7 +533,7 @@
                 const safeTitle = escapeXml(`[${String(i + 1).padStart(2, '0')}] ${file.rawTitle} - Raw`);
                 const safeContent = file.rawContent.replace(/<br\s*\/?>/gi, '<br/>').replace(/<hr\s*\/?>/gi, '<hr/>');
 
-                const chapterHtml = `<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head><title>${safeTitle}</title>\n<style>body { font-family: sans-serif; line-height: 1.6; padding: 2% 5%; } h1 { text-align: center; margin-bottom: 1.5em; font-size: 1.5em; color: #555; } p { margin-bottom: 1em; }</style>\n</head>\n<body>\n<h1>${safeTitle}</h1>\n${safeContent}\n</body>\n</html>`;
+                const chapterHtml = `<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head><title>${safeTitle}</title>\n<style>body { font-family: sans-serif; line-height: 1.6; padding: 2% 5%; } h1 { text-align: center; margin-bottom: 1.5em; font-size: 1.5em; color: #555; } p { margin-bottom: 1em; } .box { border: 1px solid #ccc; background-color: #f9f9f9; border-radius: 6px; padding: 1em; margin: 1.5em 0; } .box p:last-child { margin-bottom: 0; }</style>\n</head>\n<body>\n<h1>${safeTitle}</h1>\n${safeContent}\n</body>\n</html>`;
 
                 await zipWriter.add(`OEBPS/${chapterFilename}`, new zip.TextReader(chapterHtml));
                 manifest += `<item id="${chapterId}" href="${chapterFilename}" media-type="application/xhtml+xml"/>\n`;
@@ -602,7 +612,7 @@
         const dateStr = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
 
         if (state.logs && state.logs.length > 0) {
-            const logContent = "--- READOMNI DEBUG LOG v20.2 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
+            const logContent = "--- READOMNI DEBUG LOG v20.3 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
             dl.log = { url: URL.createObjectURL(new Blob([logContent], { type: 'text/plain' })), name: `readomni_debug_${new Date().getTime()}.txt` };
         }
 
@@ -822,7 +832,7 @@
  logs: []
         };
 
-        logDebug(state, `--- NEW RUN INITIALIZED (V20.2) Auto-Extracting Raws ---`);
+        logDebug(state, `--- NEW RUN INITIALIZED (V20.3) Auto-Extracting Raws ---`);
         localStorage.setItem(STATE_KEY, JSON.stringify(state));
 
         const runUrl = new URL(firstLink.href, window.location.origin);
