@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ReadOmni Auto-Workflow
 // @namespace    http://tampermonkey.net/
-// @version      1.16
+// @version      1.17
 // @description  Automates the ReadOmni thread creation, glossary, and renaming workflow.
 // @author       You
 // @match        https://app.readomni.com/*
@@ -257,8 +257,23 @@
                 // 9. Wait for routing back to the Library page
                 await waitForElement('a[href*="/?thread="]', 'Add Translation');
 
-                // 10. Rename Thread
-                const ellipsisIcon = await waitForElement('.lucide-ellipsis-vertical');
+                // 10. Rename Thread (Safely target the Thread Menu, ignoring Translation Menus)
+                let ellipsisIcon = null;
+                for (let i = 0; i < 30; i++) {
+                    const h1 = document.querySelector('h1'); // H1 is exclusively used for the Thread Title here
+                    if (h1 && h1.parentElement) {
+                        // Locate the three-dot menu living inside the exact same container block
+                        ellipsisIcon = h1.parentElement.querySelector('.lucide-ellipsis-vertical');
+                        if (ellipsisIcon) break;
+                    }
+                    await sleep(300);
+                }
+
+                if (!ellipsisIcon) {
+                    console.warn("Could not find h1-scoped ellipsis, falling back to global search");
+                    ellipsisIcon = await waitForElement('.lucide-ellipsis-vertical');
+                }
+
                 const ellipsisBtn = ellipsisIcon.closest('button') || ellipsisIcon.closest('[role="button"]') || ellipsisIcon.parentElement;
                 reactClick(ellipsisBtn);
                 await sleep(500);
@@ -370,7 +385,7 @@
     // Initial check
     injectTriggerButton();
 
-    // Trigger workflow recovery on page load (handles the 5s hard refresh seamlessly)
+    // Trigger workflow recovery on page load (handles the 10s hard refresh seamlessly)
     if (sessionStorage.getItem(STATE_KEY)) {
         setTimeout(doWorkflow, 1000); // 1-second delay lets DOM/React settle after a reload
     }
