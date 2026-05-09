@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ReadOmni Sequential ZIP & EPUB Downloader
 // @namespace    http://tampermonkey.net/
-// @version      20.3
-// @description  Permanent Bottom Nav, Faster Watchdog Timeout, Pro Reader UI, Preserved Chapter Titles, Auto Raws, and Styled System Boxes.
+// @version      20.4
+// @description  Permanent Bottom Nav, Faster Watchdog Timeout, Pro Reader UI, Box Styles, and First-Chapter Filtering.
 // @author       You
 // @match        https://app.readomni.com/*
 // @require      https://cdn.jsdelivr.net/npm/@zip.js/zip.js@2.8.26/dist/zip.min.js
@@ -612,7 +612,7 @@
         const dateStr = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
 
         if (state.logs && state.logs.length > 0) {
-            const logContent = "--- READOMNI DEBUG LOG v20.3 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
+            const logContent = "--- READOMNI DEBUG LOG v20.4 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
             dl.log = { url: URL.createObjectURL(new Blob([logContent], { type: 'text/plain' })), name: `readomni_debug_${new Date().getTime()}.txt` };
         }
 
@@ -621,7 +621,23 @@
             return;
         }
 
-        const reversedFiles = [...state.files].reverse();
+        let reversedFiles = [...state.files].reverse();
+
+        // Custom filter: check if the first chronologically scraped chapter is the placeholder "第99887章 “牌位”"
+        if (reversedFiles.length > 0) {
+            const firstChap = reversedFiles[0];
+            const rawCheckString = (firstChap.rawTitle || "") + " " + (firstChap.rawContent || "");
+            if (rawCheckString.includes("第99887章") && rawCheckString.includes("牌位")) {
+                logDebug(state, "Found ignore-flagged placeholder chapter '第99887章 “牌位”' as [01]. Removing and renumbering.");
+                reversedFiles.shift(); // Remove the chapter, automatically renumbering the rest.
+            }
+        }
+
+        if (reversedFiles.length === 0) {
+            showFinalScreen(dl, state.threadUrl, dl.log ? [dl.log.url] : []);
+            return;
+        }
+
         const hasRaws = reversedFiles.some(f => f.rawContent);
 
         // --- WEBNOVEL HTML GENERATION ---
@@ -832,7 +848,7 @@
  logs: []
         };
 
-        logDebug(state, `--- NEW RUN INITIALIZED (V20.3) Auto-Extracting Raws ---`);
+        logDebug(state, `--- NEW RUN INITIALIZED (V20.4) Auto-Extracting Raws ---`);
         localStorage.setItem(STATE_KEY, JSON.stringify(state));
 
         const runUrl = new URL(firstLink.href, window.location.origin);
