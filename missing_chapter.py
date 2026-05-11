@@ -31,7 +31,7 @@ def get_opf_path(z):
 def extract_toc_chapters(z, opf_soup, opf_dir):
     """Yields chapter numbers and titles by parsing the EPUB's TOC."""
     titles = []
-    
+
     # 1. Try EPUB2 NCX method
     spine = opf_soup.find("spine")
     toc_id = spine.get("toc") if spine else None
@@ -43,7 +43,6 @@ def extract_toc_chapters(z, opf_soup, opf_dir):
                 ncx_soup = BeautifulSoup(z.read(toc_path), "xml")
                 # NCX uses <navLabel><text>...</text></navLabel>
                 for text_tag in ncx_soup.find_all("text"):
-                    # Check parent just to be safe
                     if text_tag.parent and text_tag.parent.name.lower() == "navlabel":
                         titles.append(text_tag.get_text(strip=True))
             except Exception:
@@ -73,7 +72,7 @@ def stream_first_para_chapters(z, opf_soup, opf_dir):
     """Yields chapter numbers and text by scanning the first paragraphs of HTML files."""
     spine = opf_soup.find("spine")
     manifest = opf_soup.find("manifest")
-    
+
     if not spine or not manifest:
         return
 
@@ -91,7 +90,7 @@ def stream_first_para_chapters(z, opf_soup, opf_dir):
         try:
             content = z.read(file_path)
             soup = BeautifulSoup(content, "html.parser")
-            
+
             # Extract first few relevant tags (headings and paragraphs)
             tags = soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p'], limit=15)
             for tag in tags:
@@ -104,10 +103,12 @@ def stream_first_para_chapters(z, opf_soup, opf_dir):
             pass
 
 def analyze_chapters(chapter_stream):
-    """Consumes the chapter stream, reports progress, missing, and out-of-order chapters."""
+    """Consumes the chapter stream, reports progress, missing, out-of-order, and duplicate chapters."""
     last_seen = None
-    missing_count = 0
-    out_of_order_count = 0
+
+    missing_chapters = []
+    out_of_order_chapters = []
+    duplicate_chapters = []
 
     print(f"\n{C_BLUE}--- Starting Chapter Analysis ---{C_RESET}\n")
 
@@ -123,28 +124,43 @@ def analyze_chapters(chapter_stream):
 
         if current_num == last_seen:
             print(f"  {C_YELLOW}[~] Duplicate or Split Chapter detected: {current_num}{C_RESET}")
+            duplicate_chapters.append(current_num)
         elif current_num == last_seen + 1:
             last_seen = current_num
         elif current_num > last_seen + 1:
             # Report missing chapters
             for m in range(last_seen + 1, current_num):
                 print(f"  {C_RED}[!] MISSING: Chapter {m}{C_RESET}")
-                missing_count += 1
+                missing_chapters.append(m)
             last_seen = current_num
         elif current_num < last_seen:
             # Report out of order
             print(f"  {C_RED}[!] OUT OF ORDER: Chapter {current_num} (Last seen was {last_seen}){C_RESET}")
-            out_of_order_count += 1
+            out_of_order_chapters.append(current_num)
             # Note: We do not update last_seen here to maintain the primary ascending track
 
+    # Print final summary stats
     print(f"\n{C_BLUE}--- Analysis Complete ---{C_RESET}")
-    print(f"Missing Chapters    : {C_RED}{missing_count}{C_RESET}")
-    print(f"Out of Order Items  : {C_RED}{out_of_order_count}{C_RESET}")
+    print(f"Missing Chapters    : {C_RED}{len(missing_chapters)}{C_RESET}")
+    print(f"Out of Order Items  : {C_RED}{len(out_of_order_chapters)}{C_RESET}")
+    print(f"Duplicates/Splits   : {C_YELLOW}{len(duplicate_chapters)}{C_RESET}")
+
+    # Print detailed lists if any issues were found
+    if missing_chapters or out_of_order_chapters or duplicate_chapters:
+        print(f"\n{C_BLUE}--- Detailed Lists ---{C_RESET}")
+        if missing_chapters:
+            print(f"Missing       : {C_RED}{', '.join(map(str, missing_chapters))}{C_RESET}")
+        if out_of_order_chapters:
+            print(f"Out of Order  : {C_RED}{', '.join(map(str, out_of_order_chapters))}{C_RESET}")
+        if duplicate_chapters:
+            print(f"Duplicates    : {C_YELLOW}{', '.join(map(str, duplicate_chapters))}{C_RESET}")
+    else:
+        print(f"\n{C_GREEN}Everything looks perfectly in order!{C_RESET}")
 
 def main():
     parser = argparse.ArgumentParser(description="Find missing and out-of-order chapters in an EPUB.")
     parser.add_argument("epub_path", help="Path to the EPUB file")
-    parser.add_argument("--first-para", action="store_true", 
+    parser.add_argument("--first-para", action="store_true",
                         help="Scan the first few paragraphs/headings of files instead of the TOC")
     args = parser.parse_args()
 
@@ -157,7 +173,7 @@ def main():
 
             opf_dir = posixpath.dirname(opf_path)
             opf_content = z.read(opf_path)
-            
+
             # Using xml parser for OPF processing
             opf_soup = BeautifulSoup(opf_content, "xml")
 
