@@ -137,7 +137,6 @@ def analyze_chapters(chapter_stream):
             # Report out of order
             print(f"  {C_RED}[!] OUT OF ORDER: Chapter {current_num} (Last seen was {last_seen}){C_RESET}")
             out_of_order_chapters.append(current_num)
-            # Note: We do not update last_seen here to maintain the primary ascending track
 
     # Print final summary stats
     print(f"\n{C_BLUE}--- Analysis Complete ---{C_RESET}")
@@ -148,8 +147,22 @@ def analyze_chapters(chapter_stream):
     # Print detailed lists if any issues were found
     if missing_chapters or out_of_order_chapters or duplicate_chapters:
         print(f"\n{C_BLUE}--- Detailed Lists ---{C_RESET}")
+
         if missing_chapters:
-            print(f"Missing       : {C_RED}{', '.join(map(str, missing_chapters))}{C_RESET}")
+            # Format the missing array to highlight items that were actually found out of order
+            missing_strs = []
+            has_ooo_in_missing = False
+            for m in missing_chapters:
+                if m in out_of_order_chapters:
+                    missing_strs.append(f"{C_GREEN}{m}*{C_RED}")
+                    has_ooo_in_missing = True
+                else:
+                    missing_strs.append(str(m))
+
+            missing_text = ', '.join(missing_strs)
+            legend = f" {C_RESET}({C_GREEN}*Green{C_RESET} = Found later out-of-order)" if has_ooo_in_missing else ""
+            print(f"Missing       : {C_RED}{missing_text}{C_RESET}{legend}")
+
         if out_of_order_chapters:
             print(f"Out of Order  : {C_RED}{', '.join(map(str, out_of_order_chapters))}{C_RESET}")
         if duplicate_chapters:
