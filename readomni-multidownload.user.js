@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ReadOmni Sequential ZIP & EPUB Downloader
 // @namespace    http://tampermonkey.net/
-// @version      20.4
-// @description  Permanent Bottom Nav, Faster Watchdog Timeout, Pro Reader UI, Box Styles, and First-Chapter Filtering.
+// @version      23.0
+// @description  Permanent Bottom Nav, Faster Watchdog, Pro UI, Box Styles, and Animated Drag & Drop Selective Downloader.
 // @author       You
 // @match        https://app.readomni.com/*
 // @require      https://cdn.jsdelivr.net/npm/@zip.js/zip.js@2.8.26/dist/zip.min.js
@@ -12,8 +12,8 @@
 (function() {
     'use strict';
 
-    const STATE_KEY = 'ro_bulk_v20_state';
-    const LOCK_KEY = 'ro_v20_active_tab_lock';
+    const STATE_KEY = 'ro_bulk_v23_state';
+    const LOCK_KEY = 'ro_v23_active_tab_lock';
     let isPreparing = false;
 
     if (typeof zip !== 'undefined') {
@@ -74,6 +74,11 @@
         });
     }
 
+    function getBookTitle() {
+        const threadH1 = document.querySelector('h1');
+        return threadH1 && threadH1.textContent ? threadH1.textContent.trim().replace(/[\/\\?%*:|"<>]/g, '_') : 'ReadOmni_Book';
+    }
+
     // --- HTML TEMPLATES ---
     function generateFullHTML(title, bodyContent) {
         return `<!DOCTYPE html>
@@ -106,356 +111,6 @@
         </html>`;
     }
 
-    function generateWebnovelHTML(bookTitle, chaptersArray) {
-        const chaptersJSON = JSON.stringify(chaptersArray).replace(/<\//g, "<\\/");
-        const safeBookId = escapeXml(bookTitle).replace(/[^a-zA-Z0-9]/g, '_');
-
-        return `<!DOCTYPE html>
-        <html lang="en">
-        <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>${bookTitle}</title>
-        <style>
-        :root { --bg: #fdfdfd; --text: #111; --border: #eaeaea; --btn-bg: #fff; --btn-hover: #f0f0f0; --accent: #8b5cf6; --raw: #ef4444; --box-bg: #f4f4f5; }
-        body.dark-mode { --bg: #121212; --text: #eee; --border: #333; --btn-bg: #1e1e1e; --btn-hover: #2a2a2a; --box-bg: #1f1f1f; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); margin: 0; transition: background 0.2s, color 0.2s; -webkit-tap-highlight-color: transparent;}
-        .container { max-width: 800px; margin: 0 auto; min-height: 100vh; display: flex; flex-direction: column; }
-
-        /* Toolbars */
-        .toolbar { display: flex; justify-content: space-between; align-items: center; padding: 12px 15px; position: sticky; top: 0; background: var(--bg); border-bottom: 1px solid var(--border); z-index: 100; gap: 12px; flex-wrap: wrap; box-shadow: 0 2px 10px rgba(0,0,0,0.05);}
-        .toolbar-group { display: flex; gap: 8px; }
-        .bottom-nav { display: flex; justify-content: space-between; padding: 30px 20px 50px 20px; border-top: 1px solid var(--border); margin-top: auto; background: var(--bg); gap: 20px; }
-
-        /* UI State Controllers */
-        body.hide-ui .toolbar { display: none !important; }
-        body.index-active #reader-view, body.index-active .bottom-nav { display: none !important; }
-        body.index-active #index-view { display: block !important; }
-
-        /* Buttons */
-        button { background: var(--btn-bg); color: var(--text); border: 1px solid var(--border); padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 600; transition: background 0.2s, transform 0.1s; display: flex; align-items: center; gap: 6px; user-select: none; touch-action: manipulation;}
-        button:hover:not(:disabled) { background: var(--btn-hover); }
-        button:active:not(:disabled) { transform: scale(0.96); }
-        button:disabled { opacity: 0.4; cursor: not-allowed; }
-        .bottom-nav button { padding: 12px 24px; font-size: 16px; flex: 1; justify-content: center; }
-
-        /* Reader Area */
-        .content-area { padding: 50px 20px 80px 20px; flex-grow: 1; }
-        body.hide-ui .content-area { padding-top: 30px; }
-        .chapter-title { text-align: center; margin-top: 0; margin-bottom: 30px; font-size: 1.8em; border-bottom: 1px solid var(--border); padding-bottom: 15px; transition: color 0.3s; }
-        .chapter-body { line-height: 1.8; font-size: 18px; }
-        .chapter-body p { margin-bottom: 1.2em; }
-        .chapter-body blockquote { border-left: 4px solid var(--accent); padding-left: 1rem; margin-left: 0; font-style: italic; opacity: 0.85; }
-        .chapter-body hr { border: 0; border-top: 1px solid var(--border); margin: 3em 0; }
-        .box { border: 1px solid var(--border); background-color: var(--box-bg); border-radius: 8px; padding: 16px; margin: 24px 0; }
-        .box p:last-child { margin-bottom: 0; }
-
-        /* Index View */
-        .index-view { display: none; }
-        .section-title { font-size: 1.2em; border-bottom: 2px solid var(--accent); padding-bottom: 5px; margin-bottom: 10px; color: var(--accent); margin-top: 2em; }
-        .index-list { list-style: none; padding: 0; margin: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 30px;}
-        .index-item { padding: 16px 20px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 16px; transition: background 0.2s;}
-        .index-item:last-child { border-bottom: none; }
-        .index-item:hover { background: var(--btn-hover); }
-        .index-item.active { font-weight: bold; color: var(--accent); background: var(--btn-hover); border-left: 4px solid var(--accent); padding-left: 16px;}
-
-        @media (max-width: 500px) {
-            .toolbar { flex-direction: column-reverse; padding: 12px 15px; }
-            .toolbar-group { width: 100%; justify-content: space-between; }
-            button { flex: 1; justify-content: center; }
-            .content-area { padding: 40px 15px 40px 15px; }
-            .bottom-nav { padding: 20px 15px 40px 15px; gap: 10px; }
-        }
-        </style>
-        </head>
-        <body>
-        <div class="container">
-        <div class="toolbar">
-        <div class="toolbar-group">
-        <button id="btn-prev">◀ Prev</button>
-        <button id="btn-index" style="color: var(--accent);" title="Hold to toggle Raws">📑 Index</button>
-        <button id="btn-next">Next ▶</button>
-        </div>
-        <div class="toolbar-group">
-        <button id="btn-font-dec" title="Decrease Font">A-</button>
-        <button id="btn-font-inc" title="Increase Font">A+</button>
-        <button id="btn-theme" title="Toggle Theme">🌙</button>
-        </div>
-        </div>
-
-        <div class="content-area" id="content-area">
-        <div id="reader-view">
-        <h1 id="chapter-title" class="chapter-title"></h1>
-        <div id="chapter-body" class="chapter-body"></div>
-        </div>
-
-        <div id="index-view" class="index-view">
-        <h1 class="chapter-title" style="border:none;">Table of Contents</h1>
-        <p id="random-tip" style="text-align:center; color:#888; font-size:14px; margin-top:-20px; padding: 0 10px;"></p>
-
-        <h3 class="section-title" id="trans-header">Translated</h3>
-        <ul id="index-list-trans" class="index-list"></ul>
-
-        <h3 class="section-title" id="raw-header" style="display:none; color: var(--raw); border-color: var(--raw);">Raws</h3>
-        <ul id="index-list-raw" class="index-list" style="display: none;"></ul>
-        </div>
-        </div>
-
-        <div id="bottom-nav" class="bottom-nav">
-        <button id="btn-prev-btm">◀ Previous</button>
-        <button id="btn-next-btm">Next ▶</button>
-        </div>
-        </div>
-
-        <script>
-        const chapters = ${chaptersJSON};
-        const BOOK_ID = "${safeBookId}";
-        let currentIndex = 0;
-        let fontSize = 18;
-        let isIndexView = false;
-        let isShowingRaw = false;
-
-        const tips = [
-            "Hold the Index button for 0.5s to instantly toggle between Translation & Raw.",
- "Double-tap anywhere on the text to hide the reading UI for full immersion.",
- "Hold the Previous button to instantly jump to the top of the chapter.",
- "Hold the Next button to instantly jump to the bottom of the chapter."
-        ];
-
-        const els = {
-            title: document.getElementById('chapter-title'),
- body: document.getElementById('chapter-body'),
- contentArea: document.getElementById('content-area'),
- indexListTrans: document.getElementById('index-list-trans'),
- indexListRaw: document.getElementById('index-list-raw'),
- rawHeader: document.getElementById('raw-header'),
- tip: document.getElementById('random-tip'),
- btnPrev: document.getElementById('btn-prev'),
- btnNext: document.getElementById('btn-next'),
- btnPrevBtm: document.getElementById('btn-prev-btm'),
- btnNextBtm: document.getElementById('btn-next-btm'),
- btnIndex: document.getElementById('btn-index'),
- btnFontDec: document.getElementById('btn-font-dec'),
- btnFontInc: document.getElementById('btn-font-inc'),
- btnTheme: document.getElementById('btn-theme')
-        };
-
-        let scrollMap = JSON.parse(localStorage.getItem('ro_scroll_' + BOOK_ID) || '{}');
-
-        // Throttled Scroll Saver
-        let scrollTimeout;
-        window.addEventListener('scroll', () => {
-            if (isIndexView) return;
-            if (!scrollTimeout) {
-                scrollTimeout = setTimeout(() => {
-                    scrollMap[currentIndex + '_' + isShowingRaw] = window.scrollY;
-                    localStorage.setItem('ro_scroll_' + BOOK_ID, JSON.stringify(scrollMap));
-                    scrollTimeout = null;
-                }, 150);
-            }
-        });
-
-        // Double Tap to toggle top UI only
-        let lastClick = 0;
-        els.contentArea.addEventListener('click', function(e) {
-            if (isIndexView) return;
-            if (e.target.tagName === 'A' || e.target.tagName === 'BUTTON') return;
-            let currentTime = new Date().getTime();
-            let tapLength = currentTime - lastClick;
-            if (tapLength < 300 && tapLength > 0) {
-                document.body.classList.toggle('hide-ui');
-                e.preventDefault();
-            }
-            lastClick = currentTime;
-        });
-
-        function updateTip() {
-            if(els.tip) els.tip.textContent = "(Tip: " + tips[Math.floor(Math.random() * tips.length)] + ")";
-        }
-
-        function renderChapter(index, showRaw) {
-            if (index < 0 || index >= chapters.length) return;
-
-            if (!isIndexView) {
-                scrollMap[currentIndex + '_' + isShowingRaw] = window.scrollY;
-                localStorage.setItem('ro_scroll_' + BOOK_ID, JSON.stringify(scrollMap));
-            }
-
-            currentIndex = index;
-            isShowingRaw = showRaw;
-            const chapter = chapters[currentIndex];
-
-            els.title.textContent = showRaw ? chapter.title + ' (Raw)' : chapter.title;
-            els.body.innerHTML = showRaw ? chapter.rawContent : chapter.content;
-
-            els.btnPrev.disabled = currentIndex === 0;
-            els.btnPrevBtm.disabled = currentIndex === 0;
-            els.btnNext.disabled = currentIndex === chapters.length - 1;
-            els.btnNextBtm.disabled = currentIndex === chapters.length - 1;
-            els.title.style.color = showRaw ? 'var(--raw)' : '';
-
-            // Restore Scroll Position
-            const targetScroll = scrollMap[currentIndex + '_' + isShowingRaw] || 0;
-            setTimeout(() => { window.scrollTo(0, targetScroll); }, 30);
-
-            localStorage.setItem('ro_progress_' + BOOK_ID, currentIndex + '_' + isShowingRaw);
-            if(isIndexView) populateIndex();
-        }
-
-        function populateIndex() {
-            els.indexListTrans.innerHTML = '';
-            chapters.forEach((chap, idx) => {
-                const li = document.createElement('li');
-                li.className = 'index-item' + (idx === currentIndex && !isShowingRaw ? ' active' : '');
-                li.textContent = chap.title;
-                li.onclick = () => { toggleIndex(); renderChapter(idx, false); };
-                els.indexListTrans.appendChild(li);
-            });
-
-            const hasRaws = chapters.some(c => c.rawContent);
-            if (hasRaws) {
-                els.rawHeader.style.display = 'block';
-                els.indexListRaw.style.display = 'block';
-                els.indexListRaw.innerHTML = '';
-                chapters.forEach((chap, idx) => {
-                    if (!chap.rawContent) return;
-                    const li = document.createElement('li');
-                    li.className = 'index-item' + (idx === currentIndex && isShowingRaw ? ' active' : '');
-                    li.textContent = chap.title + ' (Raw)';
-                    if (idx === currentIndex && isShowingRaw) {
-                        li.style.color = 'var(--raw)';
-                        li.style.borderLeftColor = 'var(--raw)';
-                    }
-                    li.onclick = () => { toggleIndex(); renderChapter(idx, true); };
-                    els.indexListRaw.appendChild(li);
-                });
-            }
-        }
-
-        function toggleIndex() {
-            isIndexView = !isIndexView;
-            if (isIndexView) {
-                updateTip();
-                document.body.classList.add('index-active');
-                populateIndex();
-                setTimeout(() => {
-                    const activeEl = document.querySelector('.index-view .active');
-                    if (activeEl) activeEl.scrollIntoView({ block: 'center' });
-                }, 50);
-            } else {
-                document.body.classList.remove('index-active');
-                window.scrollTo(0, scrollMap[currentIndex + '_' + isShowingRaw] || 0);
-            }
-        }
-
-        function toggleTheme() {
-            document.body.classList.toggle('dark-mode');
-            const isDark = document.body.classList.contains('dark-mode');
-            els.btnTheme.textContent = isDark ? '☀️' : '🌙';
-            localStorage.setItem('ro_theme', isDark ? 'dark' : 'light');
-        }
-
-        function changeFontSize(delta) {
-            if (isIndexView) return;
-            const oldScroll = window.scrollY;
-            const oldHeight = document.documentElement.scrollHeight || 1;
-
-            fontSize += delta;
-            if (fontSize < 12) fontSize = 12;
-            if (fontSize > 36) fontSize = 36;
-            els.body.style.fontSize = fontSize + 'px';
-            localStorage.setItem('ro_fontsize', fontSize);
-
-            setTimeout(() => {
-                const newHeight = document.documentElement.scrollHeight;
-                window.scrollTo(0, oldScroll * (newHeight / oldHeight));
-            }, 10);
-        }
-
-        // --- ADVANCED BUTTON LOGIC (HOLD DETECTION) ---
-        function setupHoldButton(btn, onClick, onHold) {
-            if (!btn) return;
-            let pressTimer;
-            let startY = 0;
-            let isLongPress = false;
-            let isDragging = false;
-
-            btn.addEventListener('pointerdown', (e) => {
-                if (btn.disabled) return;
-                startY = e.clientY;
-                isLongPress = false;
-                isDragging = false;
-                btn.setPointerCapture(e.pointerId);
-                pressTimer = setTimeout(() => {
-                    isLongPress = true;
-                    onHold();
-                }, 500);
-            });
-
-            btn.addEventListener('pointermove', (e) => {
-                if (Math.abs(e.clientY - startY) > 15) {
-                    isDragging = true;
-                    if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
-                }
-            });
-
-            btn.addEventListener('pointerup', (e) => {
-                if (btn.disabled) return;
-                if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
-                btn.releasePointerCapture(e.pointerId);
-                if (!isLongPress && !isDragging) {
-                    onClick();
-                }
-            });
-
-            btn.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); });
-        }
-
-        const goPrev = () => renderChapter(currentIndex - 1, isShowingRaw);
-        const goNext = () => renderChapter(currentIndex + 1, isShowingRaw);
-        const goTop = () => window.scrollTo({ top: 0, behavior: 'smooth' });
-        const goBottom = () => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-
-        setupHoldButton(els.btnPrev, goPrev, goTop);
-        setupHoldButton(els.btnPrevBtm, goPrev, goTop);
-        setupHoldButton(els.btnNext, goNext, goBottom);
-        setupHoldButton(els.btnNextBtm, goNext, goBottom);
-
-        setupHoldButton(els.btnIndex, toggleIndex, () => {
-            const chap = chapters[currentIndex];
-            if (chap && chap.rawContent) {
-                if (isIndexView) toggleIndex();
-                renderChapter(currentIndex, !isShowingRaw);
-            }
-        });
-
-        els.btnTheme.onclick = toggleTheme;
-        els.btnFontInc.onclick = () => changeFontSize(2);
-        els.btnFontDec.onclick = () => changeFontSize(-2);
-
-        // Boot
-        const savedTheme = localStorage.getItem('ro_theme');
-        if (savedTheme === 'dark' || (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
-            toggleTheme();
-        }
-        const savedSize = localStorage.getItem('ro_fontsize');
-        if (savedSize) {
-            fontSize = parseInt(savedSize, 10);
-            els.body.style.fontSize = fontSize + 'px';
-        }
-
-        const savedProgress = localStorage.getItem('ro_progress_' + BOOK_ID);
-        if (savedProgress) {
-            const [idxStr, rawStr] = savedProgress.split('_');
-            renderChapter(parseInt(idxStr, 10), rawStr === 'true');
-        } else {
-            renderChapter(0, false);
-        }
-        </script>
-        </body>
-        </html>`;
-    }
-
     // --- STRUCTURAL HTML SCRAPER ---
     function extractChapterHTMLBlocks() {
         const activeTab = document.querySelector('[role="tabpanel"][data-state="active"]') || document;
@@ -474,7 +129,7 @@
 
                 let text = el.textContent.trim();
                 if (text.length === 0 && tagName !== 'br') return;
-                if (el.closest('a') || el.closest('button')) return; // Ignore interactive UI
+                if (el.closest('a') || el.closest('button')) return;
 
                 htmlBlocks.push(el.outerHTML);
             });
@@ -496,12 +151,20 @@
         const containerXml = `<?xml version="1.0" encoding="UTF-8"?>\n<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">\n<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>\n</container>`;
         await zipWriter.add("META-INF/container.xml", new zip.TextReader(containerXml));
 
+        // Inject Stylesheet File
+        const cssContent = `body { font-family: sans-serif; line-height: 1.6; padding: 2% 5%; color: #111; background: #fff; } h1 { text-align: center; margin-bottom: 1.5em; font-size: 1.6em; padding-bottom: 0.5em; border-bottom: 1px solid #eaeaea; } h1 a { color: inherit; text-decoration: none; border-bottom: 2px dashed #8b5cf6; transition: color 0.2s; } h1 a:hover { color: #8b5cf6; } p { margin-bottom: 1.2em; font-size: 1.1em; } blockquote { border-left: 4px solid #ccc; padding-left: 1em; margin-left: 0; font-style: italic; color: #555; } .box { border: 1px solid #eaeaea; background-color: #f4f4f5; border-radius: 8px; padding: 16px; margin: 24px 0; } .box p:last-child { margin-bottom: 0; } @media (prefers-color-scheme: dark) { body { background: #121212; color: #eee; } h1 { border-color: #333; } blockquote { color: #9ca3af; border-color: #4b5563; } .box { border-color: #333; background: #1f1f1f; } }`;
+        await zipWriter.add("OEBPS/Styles/style.css", new zip.TextReader(cssContent));
+
         let manifest = `<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>\n`;
+        manifest += `<item id="css" href="Styles/style.css" media-type="text/css"/>\n`;
         let spine = ``;
         let navMap = ``;
         let playOrder = 1;
 
         if (mode === 'tl' || mode === 'combined') {
+            const firstTransId = `chapter_trans_001`;
+            navMap += `<navPoint id="navGroup-tl" playOrder="${playOrder++}">\n<navLabel><text>Translated</text></navLabel>\n<content src="Text/${firstTransId}.html"/>\n`;
+
             for (let i = 0; i < reversedFiles.length; i++) {
                 const file = reversedFiles[i];
                 const fileNum = String(i + 1).padStart(3, '0');
@@ -511,42 +174,56 @@
                 const safeTitle = escapeXml(`[${String(i + 1).padStart(2, '0')}] ${file.rawTitle}`);
                 const safeContent = file.content.replace(/<br\s*\/?>/gi, '<br/>').replace(/<hr\s*\/?>/gi, '<hr/>');
 
-                const chapterHtml = `<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head><title>${safeTitle}</title>\n<style>body { font-family: sans-serif; line-height: 1.6; padding: 2% 5%; } h1 { text-align: center; margin-bottom: 1.5em; font-size: 1.5em; } p { margin-bottom: 1em; } blockquote { border-left: 3px solid #ccc; padding-left: 1em; margin-left: 0; font-style: italic; } .box { border: 1px solid #ccc; background-color: #f9f9f9; border-radius: 6px; padding: 1em; margin: 1.5em 0; } .box p:last-child { margin-bottom: 0; }</style>\n</head>\n<body>\n<h1>${safeTitle}</h1>\n${safeContent}\n</body>\n</html>`;
+                // Add link back to raw if combined
+                const h1Content = (mode === 'combined' && file.rawContent) ? `<a href="chapter_raw_${fileNum}.html" title="Jump to Raw">${safeTitle}</a>` : safeTitle;
+
+                const chapterHtml = `<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head><title>${safeTitle}</title>\n<link rel="stylesheet" href="../Styles/style.css" type="text/css"/>\n</head>\n<body>\n<h1>${h1Content}</h1>\n${safeContent}\n</body>\n</html>`;
 
                 await zipWriter.add(`OEBPS/${chapterFilename}`, new zip.TextReader(chapterHtml));
                 manifest += `<item id="${chapterId}" href="${chapterFilename}" media-type="application/xhtml+xml"/>\n`;
                 spine += `<itemref idref="${chapterId}"/>\n`;
-                navMap += `<navPoint id="navPoint-${playOrder}" playOrder="${playOrder}"><navLabel><text>${safeTitle}</text></navLabel><content src="${chapterFilename}"/></navPoint>\n`;
+                navMap += `<navPoint id="navPoint-tl-${playOrder}" playOrder="${playOrder}"><navLabel><text>${safeTitle}</text></navLabel><content src="${chapterFilename}"/></navPoint>\n`;
                 playOrder++;
             }
+            navMap += `</navPoint>\n`;
         }
 
         if (mode === 'raw' || mode === 'combined') {
-            for (let i = 0; i < reversedFiles.length; i++) {
-                const file = reversedFiles[i];
-                if (!file.rawContent) continue;
+            let firstRawIdx = reversedFiles.findIndex(f => f.rawContent);
+            if (firstRawIdx !== -1) {
+                const firstRawId = `chapter_raw_${String(firstRawIdx + 1).padStart(3, '0')}`;
+                navMap += `<navPoint id="navGroup-raw" playOrder="${playOrder++}">\n<navLabel><text>Raw</text></navLabel>\n<content src="Text/${firstRawId}.html"/>\n`;
 
-                const fileNum = String(i + 1).padStart(3, '0');
-                const chapterId = `chapter_raw_${fileNum}`;
-                const chapterFilename = `Text/${chapterId}.html`;
+                for (let i = 0; i < reversedFiles.length; i++) {
+                    const file = reversedFiles[i];
+                    if (!file.rawContent) continue;
 
-                const safeTitle = escapeXml(`[${String(i + 1).padStart(2, '0')}] ${file.rawTitle} - Raw`);
-                const safeContent = file.rawContent.replace(/<br\s*\/?>/gi, '<br/>').replace(/<hr\s*\/?>/gi, '<hr/>');
+                    const fileNum = String(i + 1).padStart(3, '0');
+                    const chapterId = `chapter_raw_${fileNum}`;
+                    const chapterFilename = `Text/${chapterId}.html`;
 
-                const chapterHtml = `<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head><title>${safeTitle}</title>\n<style>body { font-family: sans-serif; line-height: 1.6; padding: 2% 5%; } h1 { text-align: center; margin-bottom: 1.5em; font-size: 1.5em; color: #555; } p { margin-bottom: 1em; } .box { border: 1px solid #ccc; background-color: #f9f9f9; border-radius: 6px; padding: 1em; margin: 1.5em 0; } .box p:last-child { margin-bottom: 0; }</style>\n</head>\n<body>\n<h1>${safeTitle}</h1>\n${safeContent}\n</body>\n</html>`;
+                    const safeTitle = escapeXml(`[${String(i + 1).padStart(2, '0')}] ${file.rawTitle} (Raw)`);
+                    const safeContent = file.rawContent.replace(/<br\s*\/?>/gi, '<br/>').replace(/<hr\s*\/?>/gi, '<hr/>');
 
-                await zipWriter.add(`OEBPS/${chapterFilename}`, new zip.TextReader(chapterHtml));
-                manifest += `<item id="${chapterId}" href="${chapterFilename}" media-type="application/xhtml+xml"/>\n`;
-                spine += `<itemref idref="${chapterId}"/>\n`;
-                navMap += `<navPoint id="navPoint-${playOrder}" playOrder="${playOrder}"><navLabel><text>${safeTitle}</text></navLabel><content src="${chapterFilename}"/></navPoint>\n`;
-                playOrder++;
+                    // Add link back to trans if combined
+                    const h1Content = (mode === 'combined') ? `<a href="chapter_trans_${fileNum}.html" title="Jump to Translated">${safeTitle}</a>` : safeTitle;
+
+                    const chapterHtml = `<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head><title>${safeTitle}</title>\n<link rel="stylesheet" href="../Styles/style.css" type="text/css"/>\n</head>\n<body>\n<h1>${h1Content}</h1>\n${safeContent}\n</body>\n</html>`;
+
+                    await zipWriter.add(`OEBPS/${chapterFilename}`, new zip.TextReader(chapterHtml));
+                    manifest += `<item id="${chapterId}" href="${chapterFilename}" media-type="application/xhtml+xml"/>\n`;
+                    spine += `<itemref idref="${chapterId}"/>\n`;
+                    navMap += `<navPoint id="navPoint-raw-${playOrder}" playOrder="${playOrder}"><navLabel><text>${safeTitle}</text></navLabel><content src="${chapterFilename}"/></navPoint>\n`;
+                    playOrder++;
+                }
+                navMap += `</navPoint>\n`;
             }
         }
 
         const opfXml = `<?xml version="1.0" encoding="UTF-8"?>\n<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="BookId">\n<metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">\n<dc:title>${escapeXml(title)}</dc:title>\n<dc:language>en</dc:language>\n<dc:identifier id="BookId">${uuid}</dc:identifier>\n</metadata>\n<manifest>\n${manifest}</manifest>\n<spine toc="ncx">\n${spine}</spine>\n</package>`;
         await zipWriter.add("OEBPS/content.opf", new zip.TextReader(opfXml));
 
-        const ncxXml = `<?xml version="1.0" encoding="UTF-8"?>\n<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">\n<head><meta name="dtb:uid" content="${uuid}"/><meta name="dtb:depth" content="1"/><meta name="dtb:totalPageCount" content="0"/><meta name="dtb:maxPageNumber" content="0"/></head>\n<docTitle><text>${escapeXml(title)}</text></docTitle>\n<navMap>\n${navMap}</navMap>\n</ncx>`;
+        const ncxXml = `<?xml version="1.0" encoding="UTF-8"?>\n<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">\n<head><meta name="dtb:uid" content="${uuid}"/><meta name="dtb:depth" content="2"/><meta name="dtb:totalPageCount" content="0"/><meta name="dtb:maxPageNumber" content="0"/></head>\n<docTitle><text>${escapeXml(title)}</text></docTitle>\n<navMap>\n${navMap}</navMap>\n</ncx>`;
         await zipWriter.add("OEBPS/toc.ncx", new zip.TextReader(ncxXml));
 
         return await zipWriter.close();
@@ -574,10 +251,6 @@
             html += `<a href="${dl.epubRaw.url}" download="${dl.epubRaw.name}" style="display: block; padding: 12px 30px; background-color: #a855f7; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">📖 Save EPUB (Raws Only)</a>`;
         } else if (dl.epubTl) {
             html += `<a href="${dl.epubTl.url}" download="${dl.epubTl.name}" style="display: block; padding: 12px 30px; background-color: #8b5cf6; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">📖 Save EPUB eBook</a>`;
-        }
-
-        if (dl.merged) {
-            html += `<a href="${dl.merged.url}" download="${dl.merged.name}" style="display: block; padding: 12px 30px; background-color: #3b82f6; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">📱 Save Webnovel App (.html)</a>`;
         }
 
         if (dl.zip) {
@@ -612,7 +285,7 @@
         const dateStr = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
 
         if (state.logs && state.logs.length > 0) {
-            const logContent = "--- READOMNI DEBUG LOG v20.4 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
+            const logContent = "--- READOMNI DEBUG LOG v23.0 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
             dl.log = { url: URL.createObjectURL(new Blob([logContent], { type: 'text/plain' })), name: `readomni_debug_${new Date().getTime()}.txt` };
         }
 
@@ -621,48 +294,32 @@
             return;
         }
 
-        let reversedFiles = [...state.files].reverse();
+        let finalFiles = state.mode === 'selective' ? [...state.files] : [...state.files].reverse();
 
-        // Custom filter: check if the first chronologically scraped chapter is the placeholder "第99887章 “牌位”"
-        if (reversedFiles.length > 0) {
-            const firstChap = reversedFiles[0];
+        // Custom filter: ignore the placeholder chapter "第99887章 “牌位”" at the very start
+        if (finalFiles.length > 0) {
+            const firstChap = finalFiles[0];
             const rawCheckString = (firstChap.rawTitle || "") + " " + (firstChap.rawContent || "");
             if (rawCheckString.includes("第99887章") && rawCheckString.includes("牌位")) {
                 logDebug(state, "Found ignore-flagged placeholder chapter '第99887章 “牌位”' as [01]. Removing and renumbering.");
-                reversedFiles.shift(); // Remove the chapter, automatically renumbering the rest.
+                finalFiles.shift();
             }
         }
 
-        if (reversedFiles.length === 0) {
+        if (finalFiles.length === 0) {
             showFinalScreen(dl, state.threadUrl, dl.log ? [dl.log.url] : []);
             return;
         }
 
-        const hasRaws = reversedFiles.some(f => f.rawContent);
-
-        // --- WEBNOVEL HTML GENERATION ---
-        try {
-            let webnovelChapters = reversedFiles.map((f, i) => {
-                const fileNum = String(i + 1).padStart(2, '0');
-                return {
-                    title: `[${fileNum}] ${f.rawTitle}`,
-                    content: f.content,
-                    rawContent: f.rawContent || null
-                };
-            });
-            let fullMergedHTML = generateWebnovelHTML(state.threadName, webnovelChapters);
-            dl.merged = { url: URL.createObjectURL(new Blob([fullMergedHTML], { type: 'text/html' })), name: `${state.threadName}_Reader_${dateStr}.html` };
-        } catch (e) {
-            logDebug(state, `Merged HTML Error: ${e.message}`);
-        }
+        const hasRaws = finalFiles.some(f => f.rawContent);
 
         // --- EPUB GENERATION ---
         if (typeof zip !== 'undefined') {
             try {
-                dl.epubTl = { url: URL.createObjectURL(await generateEpubBlob(state, reversedFiles, 'tl')), name: `${state.threadName}_TL_${dateStr}.epub` };
+                dl.epubTl = { url: URL.createObjectURL(await generateEpubBlob(state, finalFiles, 'tl')), name: `${state.threadName}_TL_${dateStr}.epub` };
                 if (hasRaws) {
-                    dl.epubRaw = { url: URL.createObjectURL(await generateEpubBlob(state, reversedFiles, 'raw')), name: `${state.threadName}_RAW_${dateStr}.epub` };
-                    dl.epubCombined = { url: URL.createObjectURL(await generateEpubBlob(state, reversedFiles, 'combined')), name: `${state.threadName}_Combined_${dateStr}.epub` };
+                    dl.epubRaw = { url: URL.createObjectURL(await generateEpubBlob(state, finalFiles, 'raw')), name: `${state.threadName}_RAW_${dateStr}.epub` };
+                    dl.epubCombined = { url: URL.createObjectURL(await generateEpubBlob(state, finalFiles, 'combined')), name: `${state.threadName}_Combined_${dateStr}.epub` };
                 }
             } catch (e) {
                 logDebug(state, `EPUB Generation Error: ${e.message}`);
@@ -676,19 +333,18 @@
                 const blobWriter = new zip.BlobWriter("application/zip");
                 const zipWriter = new zip.ZipWriter(blobWriter);
 
-                for (let i = 0; i < reversedFiles.length; i++) {
-                    const file = reversedFiles[i];
+                for (let i = 0; i < finalFiles.length; i++) {
+                    const file = finalFiles[i];
                     const fileNum = String(i + 1).padStart(2, '0');
                     const newTitle = `[${fileNum}] ${file.rawTitle}`;
-                    // Replace illegal characters specifically for the ZIP file paths
                     const safeFilename = newTitle.replace(/[\/\\?%*:|"<>]/g, '_');
 
                     let singleFileHTML = generateFullHTML(newTitle, file.content);
                     await zipWriter.add(`Translated/${safeFilename}.html`, new zip.TextReader(singleFileHTML));
 
                     if (file.rawContent) {
-                        let rawFileHTML = generateFullHTML(`${newTitle} - Raw`, file.rawContent);
-                        await zipWriter.add(`Raw/${safeFilename} - Raw.html`, new zip.TextReader(rawFileHTML));
+                        let rawFileHTML = generateFullHTML(`${newTitle} (Raw)`, file.rawContent);
+                        await zipWriter.add(`Raw/${safeFilename} (Raw).html`, new zip.TextReader(rawFileHTML));
                     }
                 }
 
@@ -718,9 +374,7 @@
             showCancelButton(state.count);
 
             await sleep(400);
-
             const h1 = await waitForElement('h1');
-            const prevBtn = await waitForElement('[aria-label="Previous chapter"]');
 
             if (!h1) {
                 logDebug(state, "ERROR: Missing H1 tag. Halting.");
@@ -729,7 +383,6 @@
                 return;
             }
 
-            // Get pure title exactly as it appears
             let rawTitleText = h1.textContent.trim();
             if (!rawTitleText) rawTitleText = 'Untitled';
 
@@ -741,7 +394,7 @@
             }
             let extractedHTMLBlocks = extractChapterHTMLBlocks();
 
-            // Always Attempt to Extract Raw (Without prompt)
+            // Extract Raw (Always extracted)
             let rawHTMLBlocks = null;
             let rawTab = Array.from(document.querySelectorAll('button[role="tab"]')).find(b => b.textContent.includes('Raw'));
             if (rawTab) {
@@ -758,16 +411,11 @@
 
             if (extractedHTMLBlocks && extractedHTMLBlocks.length > 0) {
                 state.retryCount = 0;
-                state.files.push({
-                    rawTitle: rawTitleText,
-                    content: extractedHTMLBlocks,
-                    rawContent: rawHTMLBlocks
-                });
+                state.files.push({ rawTitle: rawTitleText, content: extractedHTMLBlocks, rawContent: rawHTMLBlocks });
                 logDebug(state, `Collected: ${rawTitleText} (Trans: ${extractedHTMLBlocks.length}, Raw: ${rawHTMLBlocks ? rawHTMLBlocks.length : 0})`);
             } else {
                 logDebug(state, `WARNING: Extracted HTML was empty for ${rawTitleText}`);
                 if (!state.retryCount) state.retryCount = 0;
-
                 if (state.retryCount < 1) {
                     state.retryCount++;
                     localStorage.setItem(STATE_KEY, JSON.stringify(state));
@@ -780,80 +428,528 @@
                 }
             }
 
-            if (!prevBtn || prevBtn.hasAttribute('disabled') || prevBtn.tagName.toLowerCase() === 'button') {
-                logDebug(state, "Reached the end of the chapter sequence.");
-                state.active = false;
-                await prepareDownloads(state);
+            // Route execution based on mode
+            if (state.mode === 'selective') {
+                state.queueIndex++;
+                if (state.queueIndex >= state.queue.length) {
+                    logDebug(state, "Reached the end of selective queue.");
+                    state.active = false;
+                    await prepareDownloads(state);
+                    return;
+                }
+                state.count++;
+                try { localStorage.setItem(STATE_KEY, JSON.stringify(state)); } catch (e) {
+                    logDebug(state, "Storage limit hit. Generating early package.");
+                    state.active = false;
+                    await prepareDownloads(state);
+                    return;
+                }
+                logDebug(state, "Navigating to next selective chapter via Hard URL Redirect...");
+                window.location.href = state.queue[state.queueIndex].url;
                 return;
             }
+            else {
+                // Sequential Mode
+                const prevBtn = await waitForElement('[aria-label="Previous chapter"]');
+                if (!prevBtn || prevBtn.hasAttribute('disabled') || prevBtn.tagName.toLowerCase() === 'button') {
+                    logDebug(state, "Reached the end of sequential chapter sequence.");
+                    state.active = false;
+                    await prepareDownloads(state);
+                    return;
+                }
 
-            state.count++;
-            try {
-                localStorage.setItem(STATE_KEY, JSON.stringify(state));
-            } catch (e) {
-                logDebug(state, "Storage limit hit. Generating early ZIP.");
-                state.active = false;
-                await prepareDownloads(state);
-                return;
-            }
+                state.count++;
+                try { localStorage.setItem(STATE_KEY, JSON.stringify(state)); } catch (e) {
+                    state.active = false; await prepareDownloads(state); return;
+                }
 
-            logDebug(state, "Navigating backward...");
-            fireOmniClick(prevBtn);
+                logDebug(state, "Navigating backward...");
+                fireOmniClick(prevBtn);
 
-            let contentChanged = false;
-            // Shorter 4.5s watchdog for snappier hard refresh detection
-            for (let i = 0; i < 45; i++) {
-                await sleep(100);
-                if (!localStorage.getItem(STATE_KEY)) return;
-
-                const checkH1 = document.querySelector('h1');
-                if (checkH1) {
-                    let checkTitle = checkH1.textContent.trim();
-                    if (!checkTitle) checkTitle = 'Untitled';
-                    if (checkTitle !== rawTitleText) {
-                        contentChanged = true;
-                        break;
+                let contentChanged = false;
+                for (let i = 0; i < 45; i++) {
+                    await sleep(100);
+                    if (!localStorage.getItem(STATE_KEY)) return;
+                    const checkH1 = document.querySelector('h1');
+                    if (checkH1) {
+                        let checkTitle = checkH1.textContent.trim();
+                        if (!checkTitle) checkTitle = 'Untitled';
+                        if (checkTitle !== rawTitleText) {
+                            contentChanged = true; break;
+                        }
                     }
                 }
-            }
-
-            if (!contentChanged) {
-                logDebug(state, "Watchdog timeout! Page hung. Forcing hard reload.");
-                window.location.reload();
-                return;
+                if (!contentChanged) {
+                    logDebug(state, "Watchdog timeout! Page hung. Forcing hard reload.");
+                    window.location.reload();
+                    return;
+                }
             }
         }
     }
 
-    function startBulkDownload() {
-        const firstLink = document.querySelector('a[href*="/translation/"]');
-        const threadH1 = document.querySelector('h1');
+    // --- SETUP UI & MODALS ---
+    function showSetupModal() {
+        if (document.getElementById('ro-setup-modal')) return;
 
-        if (!firstLink) return alert("Could not find any chapters to start with!");
+        const currentTitle = getBookTitle();
 
-        const confirmDownload = confirm("Start automated downloading?\n\nNote: You can cancel mid-way to package whatever has been collected.");
-        if (!confirmDownload) return;
+        const overlay = document.createElement('div');
+        overlay.id = 'ro-setup-modal';
+        Object.assign(overlay.style, {
+            position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh',
+            backgroundColor: 'rgba(0, 0, 0, 0.85)', zIndex: '9999999',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontFamily: 'sans-serif'
+        });
 
+        overlay.innerHTML = `
+        <div style="background: var(--card, #fff); color: var(--foreground, #111); padding: 24px; border-radius: 12px; width: 90%; max-width: 450px; border: 1px solid var(--border, #ccc); box-shadow: 0 10px 25px rgba(0,0,0,0.5);">
+        <h2 style="margin: 0 0 20px 0; font-size: 20px; font-weight: bold;">OmniDownloader Setup</h2>
+
+        <label style="display: block; margin: 0 0 8px; font-weight: 600; font-size: 14px;">Book Title (Used for EPUB & Filenames):</label>
+        <input id="ro-setup-title" type="text" value="${currentTitle}" style="width: 100%; padding: 10px; border-radius: 6px; background: var(--input, #f3f4f6); color: var(--foreground, #111); border: 1px solid var(--border, #ccc); margin-bottom: 20px; font-size: 14px;">
+
+        <label style="display: block; margin: 0 0 8px; font-weight: 600; font-size: 14px;">Download Mode:</label>
+        <select id="ro-setup-mode" style="width: 100%; padding: 10px; border-radius: 6px; background: var(--input, #f3f4f6); color: var(--foreground, #111); border: 1px solid var(--border, #ccc); margin-bottom: 25px; font-size: 14px;">
+        <option value="sequential">Sequential (Current to First)</option>
+        <option value="selective">Selective (Custom Selection & Reorder)</option>
+        </select>
+
+        <div style="display: flex; justify-content: flex-end; gap: 12px;">
+        <button id="ro-btn-cancel" style="padding: 10px 20px; border-radius: 6px; background: transparent; color: var(--foreground, #111); border: 1px solid var(--border, #ccc); cursor: pointer; font-weight: bold;">Cancel</button>
+        <button id="ro-btn-start" style="padding: 10px 20px; border-radius: 6px; background: #8b5cf6; color: #fff; border: none; cursor: pointer; font-weight: bold;">Next →</button>
+        </div>
+        </div>
+        `;
+
+        document.body.appendChild(overlay);
+
+        document.getElementById('ro-btn-cancel').onclick = () => overlay.remove();
+        document.getElementById('ro-btn-start').onclick = () => {
+            const mode = document.getElementById('ro-setup-mode').value;
+            const chosenTitle = document.getElementById('ro-setup-title').value.trim() || 'ReadOmni_Book';
+            overlay.remove();
+
+            if (mode === 'sequential') {
+                const firstLink = document.querySelector('a[href*="/translation/"]');
+                if (!firstLink) return alert("Could not find any chapters to start with!");
+                initSequential(firstLink.href, chosenTitle);
+            } else {
+                if (window.location.pathname.includes('/thread/')) {
+                    initSelectiveScrape(chosenTitle);
+                } else {
+                    const threadLink = document.querySelector('a[href*="/thread/"]');
+                    if (threadLink) {
+                        sessionStorage.setItem('ro_sel_init', chosenTitle);
+                        window.location.href = threadLink.href;
+                    } else {
+                        alert("Could not find Library page. Please go to the Library manually to start Selective Download.");
+                    }
+                }
+            }
+        };
+    }
+
+    function initSequential(startUrl, customTitle) {
         const runId = Date.now().toString();
         sessionStorage.setItem(LOCK_KEY, runId);
-
         const state = {
-            active: true,
-            runId: runId,
-            threadUrl: window.location.href,
-            threadName: threadH1 && threadH1.textContent ? threadH1.textContent.trim().replace(/[\/\\?%*:|"<>]/g, '_') : 'ReadOmni_Thread',
- count: 1,
- retryCount: 0,
- files: [],
- logs: []
+            mode: 'sequential', active: true, runId: runId,
+            threadUrl: window.location.href, includeRaws: true,
+            threadName: customTitle, count: 1, retryCount: 0, files: [], logs: []
         };
-
-        logDebug(state, `--- NEW RUN INITIALIZED (V20.4) Auto-Extracting Raws ---`);
+        logDebug(state, `--- NEW RUN INITIALIZED (V23.0 Sequential) ---`);
         localStorage.setItem(STATE_KEY, JSON.stringify(state));
-
-        const runUrl = new URL(firstLink.href, window.location.origin);
+        const runUrl = new URL(startUrl, window.location.origin);
         runUrl.searchParams.set('ro_start_download', 'true');
         window.location.href = runUrl.toString();
+    }
+
+    // --- SELECTIVE SCRAPING & UI ---
+    async function initSelectiveScrape(customTitle) {
+        const fallbackTitle = getBookTitle();
+        const threadName = customTitle || fallbackTitle;
+
+        const loading = document.createElement('div');
+        Object.assign(loading.style, {
+            position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh',
+            backgroundColor: 'rgba(0,0,0,0.85)', zIndex: '9999999', display: 'flex',
+                      flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#fff'
+        });
+        loading.innerHTML = `<h2 style="margin:0 0 10px;font-size:22px;">Scraping Chapter List...</h2><p style="color:#aaa;font-size:14px;">This might take a few seconds.</p>`;
+        document.body.appendChild(loading);
+
+        try {
+            // Force 100 per page to minimize clicks
+            const combo = document.querySelector('button[role="combobox"]');
+            if (combo && !combo.textContent.includes('100')) {
+                fireOmniClick(combo);
+                await sleep(300);
+                const opts = Array.from(document.querySelectorAll('[role="option"]'));
+                const opt100 = opts.find(o => o.textContent.includes('100'));
+                if (opt100) {
+                    fireOmniClick(opt100);
+                    await sleep(1500);
+                }
+            }
+
+            let allLinksMap = new Map();
+
+            while(true) {
+                const links = document.querySelectorAll('a[href*="/translation/"]');
+                links.forEach(l => {
+                    const titleEl = l.querySelector('h3') || l.querySelector('span.truncate') || l;
+                    allLinksMap.set(l.href, titleEl.textContent.trim());
+                });
+
+                const nextBtn = Array.from(document.querySelectorAll('button')).find(b => {
+                    const sr = b.querySelector('span.sr-only');
+                    return sr && sr.textContent.includes('Go to next page');
+                });
+
+                if (!nextBtn || nextBtn.hasAttribute('disabled') || nextBtn.disabled) break;
+
+                const firstHref = links[0]?.href;
+                fireOmniClick(nextBtn);
+
+                let changed = false;
+                for(let i=0; i<30; i++) {
+                    await sleep(100);
+                    const newFirst = document.querySelector('a[href*="/translation/"]')?.href;
+                    if(newFirst && newFirst !== firstHref) { changed = true; break; }
+                }
+                if(!changed) break;
+                await sleep(200);
+            }
+
+            loading.remove();
+
+            let rawList = Array.from(allLinksMap.entries()).map(([url, title]) => ({url, title, selected: true}));
+
+            // Reverse to get First -> Current
+            rawList.reverse();
+
+            // Filter out placeholder chapter if it's the absolute first entry
+            if (rawList.length > 0 && rawList[0].title.includes("99887")) {
+                rawList.shift();
+            }
+
+            showSelectiveUI(rawList, threadName, window.location.href);
+
+        } catch(e) {
+            loading.remove();
+            alert("Error during scraping: " + e.message);
+        }
+    }
+
+    function showSelectiveUI(listArray, threadName, threadUrl) {
+        const ui = document.createElement('div');
+        Object.assign(ui.style, {
+            position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh',
+            backgroundColor: 'var(--background, #fdfdfd)', color: 'var(--foreground, #111)', zIndex: '9999999',
+                      display: 'flex', flexDirection: 'column', fontFamily: 'sans-serif'
+        });
+
+        ui.innerHTML = `
+        <div style="padding: 16px 24px; border-bottom: 1px solid var(--border, #ccc); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+        <div style="display:flex; flex-direction:column; gap: 4px;">
+        <h2 style="margin: 0; font-size: 20px;">Select & Reorder</h2>
+        <input id="ro-sel-title" type="text" value="${threadName}" style="padding: 4px 8px; border-radius: 4px; border: 1px solid var(--border, #ccc); background: var(--input, #f3f4f6); color: var(--foreground, #111); font-size: 13px; width: 100%; max-width: 300px;">
+        </div>
+        <div style="display:flex; gap:10px;">
+        <button id="ro-sel-cancel" style="padding: 10px 16px; border-radius: 6px; background: transparent; color: var(--foreground); border: 1px solid var(--border, #ccc); cursor: pointer; font-weight: bold;">Cancel</button>
+        <button id="ro-sel-start" style="padding: 10px 24px; border-radius: 6px; background: #8b5cf6; color: #fff; border: none; cursor: pointer; font-weight: bold;">Download Selected</button>
+        </div>
+        </div>
+        <div style="padding: 12px 24px; background: var(--muted, #f3f4f6); display: flex; gap: 10px; flex-wrap: wrap; border-bottom: 1px solid var(--border, #ccc);">
+        <button id="ro-sel-all" style="padding: 8px 14px; border-radius: 4px; border: 1px solid var(--border, #ccc); background: var(--card, #fff); color: var(--foreground, #111); cursor: pointer; font-size: 13px;">Select All</button>
+        <button id="ro-sel-none" style="padding: 8px 14px; border-radius: 4px; border: 1px solid var(--border, #ccc); background: var(--card, #fff); color: var(--foreground, #111); cursor: pointer; font-size: 13px;">Deselect All</button>
+        <span style="margin-left:auto; align-self:center; font-size:12px; color:var(--muted-foreground, #888);">(Hold/Shift+Click row for multi-select • Drag handle to reorder)</span>
+        </div>
+        <div id="ro-sel-list" style="flex: 1; overflow-y: auto; padding: 10px 0; display: flex; flex-direction: column; position: relative;">
+        </div>
+        `;
+        document.body.appendChild(ui);
+
+        const listContainer = document.getElementById('ro-sel-list');
+
+        listArray.forEach((itemData) => {
+            const row = document.createElement('div');
+            row.className = 'ro-list-row selected';
+            row.dataset.url = itemData.url;
+            row.dataset.title = itemData.title;
+
+            Object.assign(row.style, {
+                display: 'flex', alignItems: 'center', padding: '12px 24px', borderBottom: '1px solid var(--border, #eaeaea)',
+                          cursor: 'pointer', userSelect: 'none', transition: 'background 0.1s'
+            });
+
+            row.innerHTML = `
+            <input type="checkbox" checked style="pointer-events: none; margin-right: 16px; width: 18px; height: 18px; accent-color: #8b5cf6;">
+            <span style="flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 15px;">${escapeXml(itemData.title)}</span>
+            <div class="ro-drag-handle" style="padding: 10px; cursor: grab; touch-action: none; color: var(--muted-foreground, #888);" title="Drag to reorder">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+            </svg>
+            </div>
+            `;
+
+            listContainer.appendChild(row);
+        });
+
+        // Add Hover & Selection styles dynamically
+        const styleId = 'ro-sel-styles';
+        if (!document.getElementById(styleId)) {
+            const style = document.createElement('style');
+            style.id = styleId;
+            style.textContent = `
+            .ro-list-row:hover { filter: brightness(0.95); }
+            .ro-list-row.selected { background-color: rgba(139, 92, 246, 0.15); }
+            .dark .ro-list-row:hover { filter: brightness(1.2); }
+            .ro-drag-handle:hover { color: var(--foreground, #111) !important; }
+            `;
+            document.head.appendChild(style);
+        }
+
+        // --- Interaction Logic: Selection ---
+        let lastSelectedIdx = -1;
+        let longPressTimer = null;
+        let pressStartY = 0;
+
+        function toggleRowSelection(row, isMultiSelect) {
+            if (row.classList.contains('ro-placeholder')) return;
+            const currentIdx = Array.from(listContainer.children).indexOf(row);
+
+            if (isMultiSelect && lastSelectedIdx > -1) {
+                const start = Math.min(currentIdx, lastSelectedIdx);
+                const end = Math.max(currentIdx, lastSelectedIdx);
+                const targetState = !row.classList.contains('selected');
+                for (let i = start; i <= end; i++) {
+                    const child = listContainer.children[i];
+                    child.classList.toggle('selected', targetState);
+                    child.querySelector('input').checked = targetState;
+                }
+            } else {
+                const targetState = !row.classList.contains('selected');
+                row.classList.toggle('selected', targetState);
+                row.querySelector('input').checked = targetState;
+                lastSelectedIdx = currentIdx;
+            }
+        }
+
+        listContainer.addEventListener('click', (e) => {
+            const handle = e.target.closest('.ro-drag-handle');
+            if (handle) return;
+            const row = e.target.closest('.ro-list-row');
+            if (!row) return;
+            toggleRowSelection(row, e.shiftKey);
+        });
+
+        // Touch long-press emulation for multi-select
+        listContainer.addEventListener('pointerdown', (e) => {
+            const handle = e.target.closest('.ro-drag-handle');
+            if (handle) return;
+            const row = e.target.closest('.ro-list-row');
+            if (!row) return;
+
+            pressStartY = e.clientY;
+            longPressTimer = setTimeout(() => {
+                toggleRowSelection(row, true);
+                if (navigator.vibrate) navigator.vibrate(50);
+            }, 500);
+        });
+
+        const clearPress = () => { if(longPressTimer) clearTimeout(longPressTimer); };
+        window.addEventListener('pointerup', clearPress);
+        window.addEventListener('pointercancel', clearPress);
+        listContainer.addEventListener('pointermove', (e) => {
+            if (longPressTimer && Math.abs(e.clientY - pressStartY) > 10) clearPress();
+        });
+
+            document.getElementById('ro-sel-all').onclick = () => {
+                Array.from(listContainer.children).forEach(row => {
+                    row.classList.add('selected');
+                    row.querySelector('input').checked = true;
+                });
+            };
+
+            document.getElementById('ro-sel-none').onclick = () => {
+                Array.from(listContainer.children).forEach(row => {
+                    row.classList.remove('selected');
+                    row.querySelector('input').checked = false;
+                });
+            };
+
+            // --- Interaction Logic: Drag & Drop Reordering with Auto-Scroll ---
+            let dragInfo = null;
+            let autoScrollInterval = null;
+            let lastClientY = 0;
+
+            function stopAutoScroll() {
+                if (autoScrollInterval) clearInterval(autoScrollInterval);
+                autoScrollInterval = null;
+            }
+
+            function checkDragOverlap(clientY) {
+                if (!dragInfo) return;
+                const { row, ghost, pointerOffsetY } = dragInfo;
+
+                ghost.style.top = (clientY - pointerOffsetY) + 'px';
+
+                const siblings = Array.from(listContainer.children).filter(c => c !== row && !c.classList.contains('ro-placeholder'));
+                const ghostCenter = clientY - pointerOffsetY + (ghost.offsetHeight / 2);
+
+                let insertBeforeNode = null;
+                for (let sibling of siblings) {
+                    const sRect = sibling.getBoundingClientRect();
+                    const sCenter = sRect.top + sRect.height / 2;
+                    if (ghostCenter < sCenter) {
+                        insertBeforeNode = sibling;
+                        break;
+                    }
+                }
+
+                if (row.nextElementSibling !== insertBeforeNode) {
+                    const rects = new Map();
+                    siblings.forEach(s => rects.set(s, s.getBoundingClientRect().top));
+
+                    listContainer.insertBefore(row, insertBeforeNode);
+
+                    siblings.forEach(s => {
+                        const oldTop = rects.get(s);
+                        const newTop = s.getBoundingClientRect().top;
+                        const dY = oldTop - newTop;
+                        if (dY !== 0) {
+                            s.style.transform = `translateY(${dY}px)`;
+                            s.style.transition = 'none';
+                            requestAnimationFrame(() => {
+                                s.style.transform = '';
+                                s.style.transition = 'transform 0.25s cubic-bezier(0.2, 0, 0, 1)';
+                            });
+                        }
+                    });
+                }
+            }
+
+            listContainer.addEventListener('pointerdown', (e) => {
+                const handle = e.target.closest('.ro-drag-handle');
+                if (!handle) return;
+
+                const row = e.target.closest('.ro-list-row');
+                if (!row) return;
+
+                e.preventDefault();
+                e.stopPropagation();
+
+                try { handle.setPointerCapture(e.pointerId); } catch(err){}
+
+                const rect = row.getBoundingClientRect();
+
+                const ghost = row.cloneNode(true);
+                ghost.style.position = 'fixed';
+                ghost.style.top = rect.top + 'px';
+                ghost.style.left = rect.left + 'px';
+                ghost.style.width = rect.width + 'px';
+                ghost.style.height = rect.height + 'px';
+                ghost.style.zIndex = '9999999';
+                ghost.style.opacity = '0.95';
+                ghost.style.boxShadow = '0 10px 25px rgba(0,0,0,0.3)';
+                ghost.style.transition = 'none';
+                ghost.style.pointerEvents = 'none';
+                document.body.appendChild(ghost);
+
+                row.style.opacity = '0.3';
+                row.style.background = 'var(--muted, #eee)';
+                row.classList.add('ro-placeholder');
+
+                dragInfo = {
+                    row, ghost, handle,
+                    pointerOffsetY: e.clientY - rect.top
+                };
+            });
+
+            window.addEventListener('pointermove', (e) => {
+                if (!dragInfo) return;
+                lastClientY = e.clientY;
+                checkDragOverlap(lastClientY);
+
+                // Auto-scroll logic
+                const listRect = listContainer.getBoundingClientRect();
+                const threshold = 60; // Distance from edge to trigger scroll
+                let scrollDir = 0;
+
+                if (lastClientY < listRect.top + threshold) {
+                    scrollDir = -1;
+                } else if (lastClientY > listRect.bottom - threshold) {
+                    scrollDir = 1;
+                }
+
+                if (scrollDir !== 0 && !autoScrollInterval) {
+                    autoScrollInterval = setInterval(() => {
+                        listContainer.scrollTop += scrollDir * 12;
+                        checkDragOverlap(lastClientY);
+                    }, 16);
+                } else if (scrollDir === 0 && autoScrollInterval) {
+                    stopAutoScroll();
+                }
+            });
+
+            window.addEventListener('pointerup', (e) => {
+                if (!dragInfo) return;
+                const { row, ghost, handle } = dragInfo;
+
+                stopAutoScroll();
+                try { handle.releasePointerCapture(e.pointerId); } catch(err){}
+
+                const finalRect = row.getBoundingClientRect();
+                ghost.style.transition = 'top 0.2s cubic-bezier(0.2, 0, 0, 1), left 0.2s cubic-bezier(0.2, 0, 0, 1)';
+                ghost.style.top = finalRect.top + 'px';
+                ghost.style.left = finalRect.left + 'px';
+
+                dragInfo = null;
+
+                setTimeout(() => {
+                    if (ghost && ghost.parentNode) ghost.remove();
+                    row.style.opacity = '';
+                    row.style.background = '';
+                    row.classList.remove('ro-placeholder');
+                }, 200);
+            });
+
+            // --- Execute Actions ---
+            document.getElementById('ro-sel-cancel').onclick = () => ui.remove();
+
+            document.getElementById('ro-sel-start').onclick = () => {
+                const finalQueue = [];
+                Array.from(listContainer.children).forEach(row => {
+                    if (row.classList.contains('selected') && !row.classList.contains('ro-placeholder')) {
+                        finalQueue.push({ url: row.dataset.url, title: row.dataset.title });
+                    }
+                });
+
+                if (finalQueue.length === 0) return alert("No chapters selected!");
+
+                const chosenTitle = document.getElementById('ro-sel-title').value.trim() || 'ReadOmni_Book';
+                ui.remove();
+
+                const runId = Date.now().toString();
+                sessionStorage.setItem(LOCK_KEY, runId);
+                const state = {
+                    mode: 'selective', active: true, runId: runId,
+                    threadUrl: threadUrl, includeRaws: true,
+                    threadName: chosenTitle, count: 1, retryCount: 0, files: [], logs: [],
+                    queue: finalQueue, queueIndex: 0
+                };
+                logDebug(state, `--- NEW RUN INITIALIZED (V23.0 Selective) Total: ${finalQueue.length} ---`);
+                localStorage.setItem(STATE_KEY, JSON.stringify(state));
+
+                const runUrl = new URL(finalQueue[0].url, window.location.origin);
+                runUrl.searchParams.set('ro_start_download', 'true');
+                window.location.href = runUrl.toString();
+            };
     }
 
     async function cancelDownload() {
@@ -881,7 +977,6 @@
             updateCancelButtonText(`Cancel Auto-Download (Attempting: ${count})`);
             return;
         }
-
         const btn = document.createElement('button');
         btn.id = 'ro-cancel-btn';
         btn.innerHTML = `🛑 Cancel Auto-Download (Attempting: ${count})`;
@@ -897,7 +992,6 @@
 
     function injectStartButton() {
         if (document.getElementById('ro-bulk-btn')) return;
-
         const btn = document.createElement('button');
         btn.id = 'ro-bulk-btn';
         btn.title = "Download Thread";
@@ -918,21 +1012,27 @@
         btn.onmousedown = () => btn.style.transform = 'scale(0.92)';
         btn.onmouseup = () => btn.style.transform = 'scale(1)';
         btn.onmouseleave = () => btn.style.transform = 'scale(1)';
-        btn.onclick = startBulkDownload;
+        btn.onclick = showSetupModal;
         document.body.appendChild(btn);
     }
 
     // --- SPA WATCHER ---
     let processActive = false;
     setInterval(() => {
-        // SPA Routing Handler
+        const selInit = sessionStorage.getItem('ro_sel_init');
+        if (window.location.pathname.includes('/thread/') && selInit) {
+            const title = selInit;
+            sessionStorage.removeItem('ro_sel_init');
+            initSelectiveScrape(title);
+        }
+
         const isThreadPage = window.location.pathname.includes('/thread/');
+        const isTranslation = window.location.pathname.includes('/translation/');
         const btnExists = document.getElementById('ro-bulk-btn');
 
         if (isThreadPage && !btnExists) injectStartButton();
         else if (!isThreadPage && btnExists) btnExists.remove();
 
-        // Handshake Check
         if (window.location.search.includes('ro_start_download=true')) {
             sessionStorage.setItem(LOCK_KEY, 'locked');
             const cleanUrl = new URL(window.location.href);
@@ -940,8 +1040,6 @@
             window.history.replaceState(null, '', cleanUrl.toString());
         }
 
-        // Trigger Queue
-        const isTranslation = window.location.pathname.includes('/translation/');
         const stateStr = localStorage.getItem(STATE_KEY);
         const isLockedTab = sessionStorage.getItem(LOCK_KEY) === 'locked';
 
