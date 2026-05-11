@@ -5,16 +5,51 @@ import zipfile
 import uuid
 import sys
 
-VERSION = "1.2.0"
+VERSION = "2.1.0"
+
+# Terminal Colors
+C_GREEN = '\033[92m'
+C_YELLOW = '\033[93m'
+C_RED = '\033[91m'
+C_BLUE = '\033[94m'
+C_RESET = '\033[0m'
 
 def natural_sort_key(s):
     """Splits strings into text and numbers to sort them mathematically (Natural Sort)."""
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', s)]
 
+def get_chapter_num(html_content, fallback_str=None):
+    """Strictly extracts the integer chapter number from titles to avoid false text matches."""
+    # 1. Check <h1>
+    m = re.search(r'<h1>(.*?)</h1>', html_content, re.IGNORECASE | re.DOTALL)
+    if m:
+        m2 = re.search(r"\b(?:chapter|ch|chp)\.?\s*(\d+)", m.group(1), re.IGNORECASE)
+        if m2: return int(m2.group(1))
+
+    # 2. Check <title>
+    m = re.search(r'<title>(.*?)</title>', html_content, re.IGNORECASE | re.DOTALL)
+    if m:
+        m2 = re.search(r"\b(?:chapter|ch|chp)\.?\s*(\d+)", m.group(1), re.IGNORECASE)
+        if m2: return int(m2.group(1))
+
+    # 3. Check filename fallback
+    if fallback_str:
+        m2 = re.search(r"\b(?:chapter|ch|chp)\.?\s*(\d+)", fallback_str, re.IGNORECASE)
+        if m2: return int(m2.group(1))
+
+    return None
+
+def clean_content_for_compare(html):
+    """Strips all HTML tags, prefixes, and whitespace for strict duplicate text checking."""
+    html = re.sub(r'<title>\[\d+\]\s*', '<title>', html)
+    html = re.sub(r'<h1>\[\d+\]\s*', '<h1>', html)
+    text = re.sub(r'<[^>]+>', '', html)
+    return re.sub(r'\s+', '', text)
+
 def update_html_tags(html_content, new_num):
     """Updates the <title> and <h1> tags with the new sequential [XX] number."""
-    html_content = re.sub(r'<title>\[\d+\](.*?)</title>', fr'<title>[{new_num:02d}]\1</title>', html_content)
-    html_content = re.sub(r'<h1>\[\d+\](.*?)</h1>', fr'<h1>[{new_num:02d}]\1</h1>', html_content)
+    html_content = re.sub(r'<title>\[\d+\]\s*(.*?)</title>', fr'<title>[{new_num:02d}] \1</title>', html_content)
+    html_content = re.sub(r'<h1>\[\d+\]\s*(.*?)</h1>', fr'<h1>[{new_num:02d}] \1</h1>', html_content)
     return html_content
 
 def extract_h1_title(html_content):
@@ -22,29 +57,112 @@ def extract_h1_title(html_content):
     match = re.search(r'<h1>(.*?)</h1>', html_content)
     return match.group(1) if match else "Unknown Title"
 
-def combine_plans(plans, mode):
+def combine_plans(plans, mode, repeat_allow):
     """Combines extracted chapter plans based on the selected mode."""
     if mode == 'directory' or mode == 'append':
         final_plan = []
         for p in plans:
             final_plan.extend(p)
         return final_plan
+
     elif mode == 'in-between':
         p1, p2 = plans[0], plans[1]
         max_idx = len(p1)
-        print(f"\n[?] File 1 has {max_idx} chapters. File 2 has {len(p2)} chapters.")
+        print(f"\n{C_BLUE}[?] File A has {max_idx} chapters. File B has {len(p2)} chapters.{C_RESET}")
         while True:
             try:
-                ans = input(f"    Insert File 2 AFTER which chapter of File 1? (0 to insert at the beginning, {max_idx} to append at the end): ")
+                ans = input(f"    Insert File B AFTER which chapter of File A? (0 to insert at the beginning, {max_idx} to append at the end): ")
                 idx = int(ans)
                 if 0 <= idx <= max_idx:
                     return p1[:idx] + p2 + p1[idx:]
-                print("    [!] Index out of range. Please try again.")
+                print(f"    {C_RED}[!] Index out of range. Please try again.{C_RESET}")
             except ValueError:
-                print("    [!] Please enter a valid number.")
+                print(f"    {C_RED}[!] Please enter a valid number.{C_RESET}")
 
-def handle_htmls(files, mode, out_filepath):
-    print(f"\n[*] Processing {len(files)} Webnovel App HTML(s)...")
+    elif mode == 'insert':
+        planA, planB = plans[0], plans[1]
+
+        print(f"  {C_BLUE}[*] Analyzing structural chapter numbers in both files...{C_RESET}")
+
+        # Pre-compute chapter numbers and titles
+        for item in planA:
+            content = item['get_content']()
+            item['title'] = extract_h1_title(content)
+            item['num'] = get_chapter_num(content, item.get('t_file'))
+
+        for item in planB:
+            content = item['get_content']()
+            item['title'] = extract_h1_title(content)
+            item['num'] = get_chapter_num(content, item.get('t_file'))
+
+        dictA = {}
+        for item in planA:
+            if item['num'] is not None:
+                dictA.setdefault(item['num'], []).append(item)
+
+        items_to_insert = []
+        for itemB in planB:
+            num = itemB['num']
+            if num is None:
+                print(f"  {C_YELLOW}[?] Skipping File B chapter '{itemB['title']}' (Could not detect 'Chapter X' number).{C_RESET}")
+                continue
+
+            if num in dictA:
+                if repeat_allow:
+                    contentB = clean_content_for_compare(itemB['get_content']())
+                    is_dup = False
+                    for itemA in dictA[num]:
+                        contentA = clean_content_for_compare(itemA['get_content']())
+                        if contentA == contentB:
+                            is_dup = True
+                            break
+                    if not is_dup:
+                        items_to_insert.append(itemB)
+                    else:
+                        print(f"  {C_YELLOW}[-] Skipping '{itemB['title']}' (Exact duplicate found in File A).{C_RESET}")
+                else:
+                    print(f"  {C_YELLOW}[-] Skipping '{itemB['title']}' (Chapter {num} already exists in File A).{C_RESET}")
+            else:
+                items_to_insert.append(itemB)
+
+        # Sort items_to_insert by chapter number just in case File B is out of order
+        items_to_insert.sort(key=lambda x: x['num'])
+
+        for itemB in items_to_insert:
+            numB = itemB['num']
+
+            # Find insertion index: first item in planA with a num > numB
+            insert_idx = len(planA)
+            for i, itemA in enumerate(planA):
+                if itemA['num'] is not None and itemA['num'] > numB:
+                    insert_idx = i
+                    break
+
+            print(f"\n  {C_GREEN}[+] Inserting: {itemB['title']}{C_RESET}")
+            print(f"      {C_BLUE}--- Context ---{C_RESET}")
+
+            # Show 2 chapters before
+            start_idx = max(0, insert_idx - 2)
+            for i in range(start_idx, insert_idx):
+                print(f"      {planA[i]['title']}")
+
+            # Show the inserted item
+            print(f"    {C_GREEN}> {itemB['title']} <{C_RESET}")
+
+            # Show 2 chapters after
+            end_idx = min(len(planA), insert_idx + 2)
+            for i in range(insert_idx, end_idx):
+                print(f"      {planA[i]['title']}")
+
+            print(f"      {C_BLUE}---------------{C_RESET}")
+
+            # Perform the insertion
+            planA.insert(insert_idx, itemB)
+
+        return planA
+
+def handle_htmls(files, mode, out_filepath, repeat_allow):
+    print(f"\n{C_BLUE}[*] Processing {len(files)} Webnovel App HTML(s)...{C_RESET}")
     plans = []
     base_content = None
 
@@ -56,92 +174,108 @@ def handle_htmls(files, mode, out_filepath):
             match = re.search(r'const chapters = (\[.*?\]);\s*const BOOK_ID', content, re.DOTALL)
             if match:
                 try:
-                    plans.append(json.loads(match.group(1)))
+                    chapters = json.loads(match.group(1))
+                    plan = []
+                    for chap in chapters:
+                        plan.append({
+                            'fp': filepath,
+                            'chap': chap,
+                            't_file': chap.get('title', ''),
+                            'r_file': None,
+                            'get_content': lambda c=chap: c.get('content', '')
+                        })
+                    plans.append(plan)
                 except json.JSONDecodeError:
-                    print(f"  [!] Failed to parse JSON in {filepath}")
+                    print(f"  {C_RED}[!] Failed to parse JSON in {filepath}{C_RESET}")
                     plans.append([])
             else:
                 plans.append([])
 
-    final_plan = combine_plans(plans, mode)
+    final_plan = combine_plans(plans, mode, repeat_allow)
     if not final_plan:
-        print("  [-] No chapters to merge.")
+        print(f"  {C_YELLOW}[-] No chapters to merge.{C_RESET}")
         return
 
-    print("  [+] Merging and sequentially renumbering titles...")
-    for idx, chap in enumerate(final_plan, start=1):
-        chap['title'] = re.sub(r'^\[\d+\]', f'[{idx:02d}]', chap.get('title', ''))
+    print(f"  {C_GREEN}[+] Building final HTML and sequentially renumbering titles...{C_RESET}")
+    final_chapters = [item['chap'] for item in final_plan]
+    for idx, chap in enumerate(final_chapters, start=1):
+        chap['title'] = re.sub(r'^\[\d+\]\s*', f'[{idx:02d}] ', chap.get('title', ''))
 
     match = re.search(r'(const chapters = )(\[.*?\])(;\s*const BOOK_ID)', base_content, re.DOTALL)
-    new_json_str = json.dumps(final_plan, ensure_ascii=False).replace('</', '<\\/')
+    new_json_str = json.dumps(final_chapters, ensure_ascii=False).replace('</', '<\\/')
     new_content = base_content[:match.start(2)] + new_json_str + base_content[match.end(2):]
 
     with open(out_filepath, 'w', encoding='utf-8') as f:
         f.write(new_content)
-    print(f"  [+] Saved to: {out_filepath}")
+    print(f"  {C_GREEN}[+] Saved to: {out_filepath}{C_RESET}")
 
-def handle_zips(files, mode, out_filepath):
-    print(f"\n[*] Processing {len(files)} ZIP Archive(s)...")
+def handle_zips(files, mode, out_filepath, repeat_allow):
+    print(f"\n{C_BLUE}[*] Processing {len(files)} ZIP Archive(s)...{C_RESET}")
+    open_zips = {f: zipfile.ZipFile(f, 'r') for f in set(files)}
     plans = []
 
     for filepath in files:
         plan = []
-        with zipfile.ZipFile(filepath, 'r') as zin:
-            namelist = zin.namelist()
-            t_files = [x for x in namelist if x.startswith('Translated/') and x.endswith('.html')]
+        zin = open_zips[filepath]
+        namelist = zin.namelist()
+        t_files = [x for x in namelist if x.startswith('Translated/') and x.endswith('.html')]
 
-            def get_num(fname):
-                m = re.search(r'\[(\d+)\]', fname)
-                return int(m.group(1)) if m else 999999
+        def get_num(fname):
+            m = re.search(r'\[(\d+)\]', fname)
+            return int(m.group(1)) if m else 999999
 
-            t_files.sort(key=get_num)
-            r_dict = {get_num(x): x for x in namelist if x.startswith('Raw/') and x.endswith('.html')}
+        t_files.sort(key=get_num)
+        r_dict = {get_num(x): x for x in namelist if x.startswith('Raw/') and x.endswith('.html')}
 
-            for t in t_files:
-                num = get_num(t)
-                plan.append((filepath, t, r_dict.get(num)))
+        for t in t_files:
+            num = get_num(t)
+            r = r_dict.get(num)
+            plan.append({
+                'fp': filepath,
+                't_file': t,
+                'r_file': r,
+                'get_content': lambda f=filepath, tf=t: open_zips[f].read(tf).decode('utf-8', 'ignore')
+            })
         plans.append(plan)
 
-    final_plan = combine_plans(plans, mode)
-    if not final_plan: return
+    final_plan = combine_plans(plans, mode, repeat_allow)
+    if not final_plan:
+        for z in open_zips.values(): z.close()
+        return
 
-    print("  [+] Rebuilding merged ZIP (Preserving non-chapter assets)...")
-    open_zips = {f: zipfile.ZipFile(f, 'r') for f in set(files)}
+    print(f"\n  {C_GREEN}[+] Rebuilding merged ZIP (Preserving non-chapter assets)...{C_RESET}")
     copied_assets = set()
 
     with zipfile.ZipFile(out_filepath, 'w', zipfile.ZIP_DEFLATED) as zout:
-        # 1. Copy any custom files (like images added to the zip manually)
         for filepath in files:
             zin = open_zips[filepath]
             for item in zin.namelist():
                 if item in copied_assets: continue
-                # Skip the actual chapters
                 if ('Translated/' in item and item.endswith('.html')) or ('Raw/' in item and item.endswith('.html')):
                     continue
                 zout.writestr(zin.getinfo(item), zin.read(item))
                 copied_assets.add(item)
 
-        # 2. Write the renumbered chapters
-        for global_idx, (fp, t_file, r_file) in enumerate(final_plan, 1):
-            zin = open_zips[fp]
+        for global_idx, item in enumerate(final_plan, 1):
+            zin = open_zips[item['fp']]
 
-            t_content = update_html_tags(zin.read(t_file).decode('utf-8', 'ignore'), global_idx)
-            new_t_name = re.sub(r'\[\d+\]', f'[{global_idx:02d}]', t_file, count=1)
+            t_content = update_html_tags(zin.read(item['t_file']).decode('utf-8', 'ignore'), global_idx)
+            new_t_name = re.sub(r'\[\d+\]\s*', f'[{global_idx:02d}] ', item['t_file'], count=1)
             zout.writestr(new_t_name, t_content.encode('utf-8'))
 
-            if r_file:
-                r_content = update_html_tags(zin.read(r_file).decode('utf-8', 'ignore'), global_idx)
-                new_r_name = re.sub(r'\[\d+\]', f'[{global_idx:02d}]', r_file, count=1)
+            if item['r_file']:
+                r_content = update_html_tags(zin.read(item['r_file']).decode('utf-8', 'ignore'), global_idx)
+                new_r_name = re.sub(r'\[\d+\]\s*', f'[{global_idx:02d}] ', item['r_file'], count=1)
                 zout.writestr(new_r_name, r_content.encode('utf-8'))
 
     for z in open_zips.values(): z.close()
-    print(f"  [+] Saved to: {out_filepath}")
+    print(f"  {C_GREEN}[+] Saved to: {out_filepath}{C_RESET}")
 
-def handle_epubs(files, mode, out_filepath):
-    print(f"\n[*] Processing {len(files)} EPUB eBook(s)...")
+def handle_epubs(files, mode, out_filepath, repeat_allow):
+    print(f"\n{C_BLUE}[*] Processing {len(files)} EPUB eBook(s)...{C_RESET}")
+    open_zips = {f: zipfile.ZipFile(f, 'r') for f in set(files)}
     plans = []
 
-    # Store metadata and non-chapter items to preserve covers/stylesheets
     base_metadata = "<metadata></metadata>"
     preserved_manifest = set()
     preserved_spine = []
@@ -149,60 +283,60 @@ def handle_epubs(files, mode, out_filepath):
 
     for idx, filepath in enumerate(files):
         plan = []
-        with zipfile.ZipFile(filepath, 'r') as zin:
-            namelist = zin.namelist()
+        zin = open_zips[filepath]
+        namelist = zin.namelist()
 
-            # Locate OPF
-            opf_path = next((f for f in namelist if f.endswith('.opf')), 'OEBPS/content.opf')
-            if opf_path in namelist:
-                opf_content = zin.read(opf_path).decode('utf-8', 'ignore')
+        opf_path = next((f for f in namelist if f.endswith('.opf')), 'OEBPS/content.opf')
+        if opf_path in namelist:
+            opf_content = zin.read(opf_path).decode('utf-8', 'ignore')
 
-                # Extract Base Metadata and Spine from the FIRST file
-                if idx == 0:
-                    m_match = re.search(r'<[a-zA-Z0-9:]*metadata[^>]*>.*?</[a-zA-Z0-9:]*metadata>', opf_content, re.DOTALL | re.IGNORECASE)
-                    if m_match: base_metadata = m_match.group(0)
+            if idx == 0:
+                m_match = re.search(r'<[a-zA-Z0-9:]*metadata[^>]*>.*?</[a-zA-Z0-9:]*metadata>', opf_content, re.DOTALL | re.IGNORECASE)
+                if m_match: base_metadata = m_match.group(0)
 
-                    s_match = re.search(r'<[a-zA-Z0-9:]*spine([^>]*)>(.*?)</[a-zA-Z0-9:]*spine>', opf_content, re.DOTALL | re.IGNORECASE)
-                    if s_match:
-                        for item in re.findall(r'<[a-zA-Z0-9:]*itemref [^>]+/>', s_match.group(2), re.IGNORECASE):
-                            if 'chapter_trans_' not in item and 'chapter_raw_' not in item:
-                                preserved_spine.append(item)
+                s_match = re.search(r'<[a-zA-Z0-9:]*spine([^>]*)>(.*?)</[a-zA-Z0-9:]*spine>', opf_content, re.DOTALL | re.IGNORECASE)
+                if s_match:
+                    for item in re.findall(r'<[a-zA-Z0-9:]*itemref [^>]+/>', s_match.group(2), re.IGNORECASE):
+                        if 'chapter_trans_' not in item and 'chapter_raw_' not in item:
+                            preserved_spine.append(item)
 
-                # Extract all non-chapter Manifest items (covers, css, fonts) from ALL files
-                man_match = re.search(r'<[a-zA-Z0-9:]*manifest>(.*?)</[a-zA-Z0-9:]*manifest>', opf_content, re.DOTALL | re.IGNORECASE)
-                if man_match:
-                    for item in re.findall(r'<[a-zA-Z0-9:]*item [^>]+/>', man_match.group(1), re.IGNORECASE):
-                        if 'chapter_trans_' not in item and 'chapter_raw_' not in item and 'toc.ncx' not in item:
-                            preserved_manifest.add(item)
+            man_match = re.search(r'<[a-zA-Z0-9:]*manifest>(.*?)</[a-zA-Z0-9:]*manifest>', opf_content, re.DOTALL | re.IGNORECASE)
+            if man_match:
+                for item in re.findall(r'<[a-zA-Z0-9:]*item [^>]+/>', man_match.group(1), re.IGNORECASE):
+                    if 'chapter_trans_' not in item and 'chapter_raw_' not in item and 'toc.ncx' not in item:
+                        preserved_manifest.add(item)
 
-            # Map Chapters
-            t_files = [x for x in namelist if x.startswith('OEBPS/Text/chapter_trans_') and x.endswith('.html')]
+        t_files = [x for x in namelist if x.startswith('OEBPS/Text/chapter_trans_') and x.endswith('.html')]
 
-            def get_epub_num(fname):
-                m = re.search(r'_trans_(\d+)', fname)
-                return int(m.group(1)) if m else 999999
+        def get_epub_num(fname):
+            m = re.search(r'_trans_(\d+)', fname)
+            return int(m.group(1)) if m else 999999
 
-            t_files.sort(key=get_epub_num)
-            for t in t_files:
-                num_str = re.search(r'_trans_(\d+)', t).group(1)
-                r_file = f'OEBPS/Text/chapter_raw_{num_str}.html'
-                if r_file not in namelist:
-                    r_file = None
-                plan.append((filepath, t, r_file))
+        t_files.sort(key=get_epub_num)
+        for t in t_files:
+            num_str = re.search(r'_trans_(\d+)', t).group(1)
+            r_file = f'OEBPS/Text/chapter_raw_{num_str}.html'
+            if r_file not in namelist: r_file = None
+            plan.append({
+                'fp': filepath,
+                't_file': t,
+                'r_file': r_file,
+                'get_content': lambda f=filepath, tf=t: open_zips[f].read(tf).decode('utf-8', 'ignore')
+            })
         plans.append(plan)
 
-    final_plan = combine_plans(plans, mode)
-    if not final_plan: return
+    final_plan = combine_plans(plans, mode, repeat_allow)
+    if not final_plan:
+        for z in open_zips.values(): z.close()
+        return
 
     book_uuid = "urn:uuid:" + str(uuid.uuid4())
     base_metadata = re.sub(r'<dc:identifier id="BookId">.*?</dc:identifier>', f'<dc:identifier id="BookId">{book_uuid}</dc:identifier>', base_metadata)
 
-    # Try to extract plain title for the NCX
     title_match = re.search(r'<dc:title>(.*?)</dc:title>', base_metadata)
     book_title = title_match.group(1) + " (Merged)" if title_match else "Merged ReadOmni Book"
 
-    print("  [+] Rebuilding merged EPUB (Preserving Covers, CSS, and Title Pages)...")
-    open_zips = {f: zipfile.ZipFile(f, 'r') for f in set(files)}
+    print(f"\n  {C_GREEN}[+] Rebuilding merged EPUB (Preserving Covers, CSS, and Title Pages)...{C_RESET}")
 
     manifest_items = ""
     spine_items = ""
@@ -214,26 +348,22 @@ def handle_epubs(files, mode, out_filepath):
         container_xml = '<?xml version="1.0" encoding="UTF-8"?>\n<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">\n<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>\n</container>'
         zout.writestr('META-INF/container.xml', container_xml.encode('utf-8'), compress_type=zipfile.ZIP_DEFLATED)
 
-        # 1. Physically copy all non-chapter assets (covers, images, css)
         for filepath in files:
             zin = open_zips[filepath]
             for item in zin.namelist():
                 if item in copied_assets: continue
-                # Skip standard structurally generated files and chapters
                 if ('chapter_trans_' in item or 'chapter_raw_' in item or
                     item.endswith('.opf') or item.endswith('.ncx') or
                     item == 'mimetype' or item == 'META-INF/container.xml'):
                     continue
-
                 zout.writestr(zin.getinfo(item), zin.read(item))
                 copied_assets.add(item)
 
-        # 2. Process the Chapters
-        for global_idx, (fp, t_file, r_file) in enumerate(final_plan, 1):
-            zin = open_zips[fp]
+        for global_idx, item in enumerate(final_plan, 1):
+            zin = open_zips[item['fp']]
 
             # Process Translated
-            t_content = update_html_tags(zin.read(t_file).decode('utf-8', 'ignore'), global_idx)
+            t_content = update_html_tags(zin.read(item['t_file']).decode('utf-8', 'ignore'), global_idx)
             t_title = extract_h1_title(t_content)
             new_t_filename = f'chapter_trans_{global_idx:03d}.html'
             new_t_id = f'chapter_trans_{global_idx:03d}'
@@ -245,8 +375,8 @@ def handle_epubs(files, mode, out_filepath):
             play_order += 1
 
             # Process Raw
-            if r_file:
-                r_content = update_html_tags(zin.read(r_file).decode('utf-8', 'ignore'), global_idx)
+            if item['r_file']:
+                r_content = update_html_tags(zin.read(item['r_file']).decode('utf-8', 'ignore'), global_idx)
                 r_title = extract_h1_title(r_content)
                 new_r_filename = f'chapter_raw_{global_idx:03d}.html'
                 new_r_id = f'chapter_raw_{global_idx:03d}'
@@ -257,7 +387,6 @@ def handle_epubs(files, mode, out_filepath):
                 navmap_items += f'<navPoint id="navPoint-{play_order}" playOrder="{play_order}"><navLabel><text>{r_title}</text></navLabel><content src="Text/{new_r_filename}"/></navPoint>\n'
                 play_order += 1
 
-        # 3. Assemble and Write the OPF
         opf_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="BookId">
 {base_metadata}
@@ -271,7 +400,6 @@ def handle_epubs(files, mode, out_filepath):
 </package>'''
         zout.writestr('OEBPS/content.opf', opf_xml.encode('utf-8'), compress_type=zipfile.ZIP_DEFLATED)
 
-        # 4. Assemble and Write the TOC NCX
         ncx_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
 <head><meta name="dtb:uid" content="{book_uuid}"/><meta name="dtb:depth" content="1"/><meta name="dtb:totalPageCount" content="0"/><meta name="dtb:maxPageNumber" content="0"/></head>
@@ -282,49 +410,54 @@ def handle_epubs(files, mode, out_filepath):
         zout.writestr('OEBPS/toc.ncx', ncx_xml.encode('utf-8'), compress_type=zipfile.ZIP_DEFLATED)
 
     for z in open_zips.values(): z.close()
-    print(f"  [+] Saved to: {out_filepath}")
+    print(f"  {C_GREEN}[+] Saved to: {out_filepath}{C_RESET}")
 
 def print_help():
     print(f"""
-======================================================
+{C_BLUE}======================================================
      ReadOmni Auto-Merger - Version {VERSION}
-======================================================
+======================================================{C_RESET}
 
 Description:
   This tool seamlessly merges ReadOmni downloaded files (.html Webnovel Apps,
   .zip archives, and .epub eBooks). It concatenates their contents, entirely
-  recalculates the [XX] numbering sequence, and rebuilds internal tables/TOCs.
+  recalculates the [XX] numbering sequence, rebuilds internal tables/TOCs,
+  and automatically preserves Calibre cover images, fonts, and stylesheets!
 
-  (v1.2.0 updates: Automatically preserves Calibre cover images, fonts,
-  stylesheets, and custom title pages!)
+{C_YELLOW}Usage Modes:{C_RESET}
 
-Usage Modes:
-
-  1. Directory Merge Mode (Default)
+  {C_GREEN}1. Directory Merge Mode (--dir){C_RESET}
      Automatically scans the current folder, groups files by extension, sorts them
-     using human/natural logic (e.g., File2 comes before File10), and merges them.
+     using natural logic (e.g., File2 comes before File10), and merges them.
 
      Command:
-       python merge_readomni.py
+       python merge_readomni.py --dir
 
-  2. Append Mode
-     Explicitly merges exactly two files together by appending File 2 to the end of File 1.
+  {C_GREEN}2. Append Mode{C_RESET}
+     Explicitly merges exactly two files together by appending File B to the end of File A.
 
      Command:
-       python merge_readomni.py <file1> <file2>
-
+       python merge_readomni.py <fileA> <fileB>
      Example:
        python merge_readomni.py "Book_Part1.epub" "Book_Part2.epub"
 
-  3. In-Between Mode (Interactive)
-     Interactively inserts the contents of File 2 *inside* File 1 at a specific chapter point.
-     Useful for injecting missing chapters that you downloaded later.
+  {C_GREEN}3. In-Between Mode (--in-between){C_RESET}
+     Interactively inserts the contents of File B *inside* File A at a specific chapter point.
 
      Command:
-       python merge_readomni.py --in-between <file1> <file2>
+       python merge_readomni.py --in-between <fileA> <fileB>
 
-     Example:
-       python merge_readomni.py --in-between "Main_Book.epub" "Missing_Chaps.epub"
+  {C_GREEN}4. Smart Insert Mode (--insert){C_RESET}
+     Scans the internal text of File A and File B to detect 'Chapter X' numbers.
+     It then automatically injects chapters from File B into File A at the correct locations.
+     If a chapter already exists in File A, it safely skips it to prevent duplicates!
+
+     Command:
+       python merge_readomni.py --insert <fileA> <fileB>
+
+     Optional Flag:
+       --repeat-allow   (If passed, allows inserting a duplicate chapter number IF
+                         the actual story text inside is different from File A).
 
 Outputs:
   All merged files are safely placed into a new folder named 'merged' in the current directory.
@@ -334,35 +467,39 @@ Outputs:
 def main():
     args = sys.argv[1:]
 
-    # Help Catch
-    if '-h' in args or '--help' in args:
+    if len(args) == 0 or '-h' in args or '--help' in args:
         print_help()
         sys.exit(0)
 
-    print(f"--- ReadOmni Advanced Merger v{VERSION} ---\n")
+    print(f"{C_BLUE}--- ReadOmni Advanced Merger v{VERSION} ---{C_RESET}\n")
 
-    mode = 'directory'
+    repeat_allow = False
+    if '--repeat-allow' in args:
+        repeat_allow = True
+        args.remove('--repeat-allow')
+
+    mode = None
     files_to_process = []
 
-    # Parse CLI Arguments
-    if len(args) == 0:
+    if args[0] == '--dir':
         mode = 'directory'
+    elif args[0] == '--in-between' and len(args) == 3:
+        mode = 'in-between'
+        files_to_process = [args[1], args[2]]
+    elif args[0] == '--insert' and len(args) == 3:
+        mode = 'insert'
+        files_to_process = [args[1], args[2]]
     elif len(args) == 2 and not args[0].startswith('--'):
         mode = 'append'
         files_to_process = [args[0], args[1]]
-    elif len(args) == 3 and args[0] == '--in-between':
-        mode = 'in-between'
-        files_to_process = [args[1], args[2]]
     else:
-        print("Invalid arguments provided.\nRun 'python merge_readomni.py --help' for usage instructions.")
+        print(f"{C_RED}Invalid arguments provided. Run 'python merge_readomni.py' for help.{C_RESET}")
         sys.exit(1)
 
-    # Create Output Directory
     out_dir = os.path.join(os.getcwd(), 'merged')
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
 
-    # Route logic based on mode
     if mode == 'directory':
         print("Note: All files will be joined in natural sequential order.\n")
         files = [f for f in os.listdir(os.getcwd()) if os.path.isfile(f)]
@@ -371,46 +508,45 @@ def main():
         epub_files = sorted([f for f in files if f.endswith('.epub')], key=natural_sort_key)
 
         if not (html_files or zip_files or epub_files):
-            print("No valid ReadOmni files found in the current directory.")
+            print(f"{C_YELLOW}No valid ReadOmni files found in the current directory.{C_RESET}")
             sys.exit(0)
 
         if len(html_files) > 1:
             if input(f"Found {len(html_files)} HTML files. Merge them? (y/n): ").strip().lower() == 'y':
-                handle_htmls(html_files, mode, os.path.join(out_dir, "Merged_App.html"))
+                handle_htmls(html_files, mode, os.path.join(out_dir, "Merged_App.html"), repeat_allow)
         if len(zip_files) > 1:
             if input(f"Found {len(zip_files)} ZIP files. Merge them? (y/n): ").strip().lower() == 'y':
-                handle_zips(zip_files, mode, os.path.join(out_dir, "Merged_Archive.zip"))
+                handle_zips(zip_files, mode, os.path.join(out_dir, "Merged_Archive.zip"), repeat_allow)
         if len(epub_files) > 1:
             if input(f"Found {len(epub_files)} EPUB files. Merge them? (y/n): ").strip().lower() == 'y':
-                handle_epubs(epub_files, mode, os.path.join(out_dir, "Merged_eBook.epub"))
+                handle_epubs(epub_files, mode, os.path.join(out_dir, "Merged_eBook.epub"), repeat_allow)
 
     else:
-        # Append or In-Between explicit files
         for f in files_to_process:
             if not os.path.exists(f):
-                print(f"Error: File not found -> {f}")
+                print(f"{C_RED}Error: File not found -> {f}{C_RESET}")
                 sys.exit(1)
 
         ext1 = os.path.splitext(files_to_process[0])[1].lower()
         ext2 = os.path.splitext(files_to_process[1])[1].lower()
 
         if ext1 != ext2:
-            print(f"Error: Files must be of the exact same type ({ext1} vs {ext2}).")
+            print(f"{C_RED}Error: Files must be of the exact same type ({ext1} vs {ext2}).{C_RESET}")
             sys.exit(1)
 
         base_name = os.path.splitext(os.path.basename(files_to_process[0]))[0]
         out_filepath = os.path.join(out_dir, f"{base_name}_Merged{ext1}")
 
         if ext1 == '.html':
-            handle_htmls(files_to_process, mode, out_filepath)
+            handle_htmls(files_to_process, mode, out_filepath, repeat_allow)
         elif ext1 == '.zip':
-            handle_zips(files_to_process, mode, out_filepath)
+            handle_zips(files_to_process, mode, out_filepath, repeat_allow)
         elif ext1 == '.epub':
-            handle_epubs(files_to_process, mode, out_filepath)
+            handle_epubs(files_to_process, mode, out_filepath, repeat_allow)
         else:
-            print(f"Error: Unsupported file format {ext1}. Use .html, .zip, or .epub")
+            print(f"{C_RED}Error: Unsupported file format {ext1}. Use .html, .zip, or .epub{C_RESET}")
 
-    print("\n--- Process Completed! Check the 'merged' folder. ---")
+    print(f"\n{C_BLUE}--- Process Completed! Check the 'merged' folder. ---{C_RESET}")
 
 if __name__ == '__main__':
     main()
