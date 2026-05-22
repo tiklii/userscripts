@@ -63,9 +63,15 @@ def extract_toc_chapters(z, opf_soup, opf_dir):
                 pass
 
     # Process and yield matching titles
+    has_translated = any(not re.search(r'\b(?:raw)\b', title, re.IGNORECASE) and CHAPTER_PATTERN.search(title) for title in titles)
+
     for title in titles:
         match = CHAPTER_PATTERN.search(title)
         if match:
+            # If the EPUB contains both translated and raw chapters, skip raw to avoid false duplicates/out-of-order errors
+            is_raw = re.search(r'\b(?:raw)\b', title, re.IGNORECASE)
+            if is_raw and has_translated:
+                continue
             yield title, int(match.group(1))
 
 def stream_first_para_chapters(z, opf_soup, opf_dir):
@@ -79,11 +85,24 @@ def stream_first_para_chapters(z, opf_soup, opf_dir):
     # Create a mapping of item IDs to their file paths
     item_dict = {item.get("id"): item.get("href") for item in manifest.find_all("item") if item.get("href")}
 
+    # Check if there are translated chapters in the spine
+    has_trans = False
+    for itemref in spine.find_all("itemref"):
+        idref = itemref.get("idref")
+        href = item_dict.get(idref)
+        if href and "_trans_" in href:
+            has_trans = True
+            break
+
     # Iterate through reading order
     for itemref in spine.find_all("itemref"):
         idref = itemref.get("idref")
         href = item_dict.get(idref)
         if not href:
+            continue
+
+        # If we have translated chapters, skip raw chapter files
+        if has_trans and "_raw_" in href:
             continue
 
         file_path = posixpath.normpath(posixpath.join(opf_dir, href))
