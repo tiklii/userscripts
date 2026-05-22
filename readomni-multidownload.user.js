@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ReadOmni Sequential ZIP & EPUB Downloader
 // @namespace    http://tampermonkey.net/
-// @version      23.1
+// @version      23.2
 // @description  Permanent Bottom Nav, Faster Watchdog, Pro UI, Box Styles, and Animated Drag & Drop Selective Downloader.
 // @author       You
 // @match        https://app.readomni.com/*
@@ -711,6 +711,26 @@
             .ro-list-row.selected { background-color: rgba(139, 92, 246, 0.15); }
             .dark .ro-list-row:hover { filter: brightness(1.2); }
             .ro-drag-handle:hover { color: var(--foreground, #111) !important; }
+            #ro-sel-list {
+                scrollbar-width: auto;
+                scrollbar-color: rgba(139, 92, 246, 0.5) var(--background, #fdfdfd);
+            }
+            #ro-sel-list::-webkit-scrollbar {
+                width: 14px;
+            }
+            #ro-sel-list::-webkit-scrollbar-track {
+                background: var(--background, #fdfdfd);
+                border-left: 1px solid var(--border, #eaeaea);
+            }
+            #ro-sel-list::-webkit-scrollbar-thumb {
+                background-color: rgba(139, 92, 246, 0.5);
+                border-radius: 7px;
+                border: 3px solid var(--background, #fdfdfd);
+                background-clip: padding-box;
+            }
+            #ro-sel-list::-webkit-scrollbar-thumb:hover {
+                background-color: rgba(139, 92, 246, 0.85);
+            }
             `;
             document.head.appendChild(style);
         }
