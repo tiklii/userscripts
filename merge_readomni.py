@@ -5,7 +5,7 @@ import zipfile
 import uuid
 import sys
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 
 # Terminal Colors
 C_GREEN = '\033[92m'
@@ -47,9 +47,29 @@ def clean_content_for_compare(html):
     return re.sub(r'\s+', '', text)
 
 def update_html_tags(html_content, new_num):
-    """Updates the <title> and <h1> tags with the new sequential [XX] number."""
+    """Updates the <title>, <h1>, and cross-links with the new sequential number and normalizes suffixes."""
+    # Normalize suffixes
+    html_content = html_content.replace(' - Raw</title>', ' (Raw)</title>')
+    html_content = html_content.replace(' - Raw</h1>', ' (Raw)</h1>')
+
+    # Update <title> tag
     html_content = re.sub(r'<title>\[\d+\]\s*(.*?)</title>', fr'<title>[{new_num:02d}] \1</title>', html_content)
-    html_content = re.sub(r'<h1>\[\d+\]\s*(.*?)</h1>', fr'<h1>[{new_num:02d}] \1</h1>', html_content)
+    
+    # Update cross-link destinations in combined EPUB
+    html_content = re.sub(
+        r'(href="(?:Text/)?chapter_(raw|trans)_)(\d+)(\.html")',
+        lambda m: f"{m.group(1)}{new_num:03d}{m.group(4)}",
+        html_content
+    )
+
+    # Update <h1> tag numbering (handles plain h1 and h1 with nested a tags)
+    def h1_replace(match):
+        h1_inner = match.group(1)
+        h1_inner = re.sub(r'\[\d+\]\s*', f'[{new_num:02d}] ', h1_inner, count=1)
+        h1_inner = h1_inner.replace(' - Raw', ' (Raw)')
+        return f"<h1>{h1_inner}</h1>"
+
+    html_content = re.sub(r'<h1>(.*?)</h1>', h1_replace, html_content, flags=re.DOTALL | re.IGNORECASE)
     return html_content
 
 def extract_h1_title(html_content):
@@ -161,55 +181,7 @@ def combine_plans(plans, mode, repeat_allow):
 
         return planA
 
-def handle_htmls(files, mode, out_filepath, repeat_allow):
-    print(f"\n{C_BLUE}[*] Processing {len(files)} Webnovel App HTML(s)...{C_RESET}")
-    plans = []
-    base_content = None
 
-    for i, filepath in enumerate(files):
-        with open(filepath, 'r', encoding='utf-8') as f:
-            content = f.read()
-            if i == 0:
-                base_content = content
-            match = re.search(r'const chapters = (\[.*?\]);\s*const BOOK_ID', content, re.DOTALL)
-            if match:
-                try:
-                    chapters = json.loads(match.group(1))
-                    plan = []
-                    for chap in chapters:
-                        plan.append({
-                            'fp': filepath,
-                            'chap': chap,
-                            't_file': chap.get('title', ''),
-                            'r_file': None,
-                            'get_content': lambda c=chap: c.get('content', '')
-                        })
-                    plans.append(plan)
-                except json.JSONDecodeError:
-                    print(f"  {C_RED}[!] Failed to parse JSON in {filepath}{C_RESET}")
-                    plans.append([])
-            else:
-                plans.append([])
-
-    final_plan = combine_plans(plans, mode, repeat_allow)
-    if not final_plan:
-        print(f"  {C_YELLOW}[-] No chapters to merge.{C_RESET}")
-        return
-
-    print(f"  {C_GREEN}[+] Building final HTML and sequentially renumbering titles...{C_RESET}")
-    final_chapters = [item['chap'] for item in final_plan]
-    for idx, chap in enumerate(final_chapters, start=1):
-        chap['title'] = re.sub(r'^\[\d+\]\s*', f'[{idx:02d}] ', chap.get('title', ''))
-
-    match = re.search(r'(const chapters = )(\[.*?\])(;\s*const BOOK_ID)', base_content, re.DOTALL)
-    new_json_str = json.dumps(final_chapters, ensure_ascii=False).replace('</', '<\\/')
-    new_content = base_content[:match.start(2)] + new_json_str + base_content[match.end(2):]
-
-    with open(out_filepath, 'w', encoding='utf-8') as f:
-        f.write(new_content)
-    print(f"  {C_GREEN}[+] Saved to: {out_filepath}{C_RESET}")
-
-def handle_zips(files, mode, out_filepath, repeat_allow):
     print(f"\n{C_BLUE}[*] Processing {len(files)} ZIP Archive(s)...{C_RESET}")
     open_zips = {f: zipfile.ZipFile(f, 'r') for f in set(files)}
     plans = []
@@ -266,6 +238,7 @@ def handle_zips(files, mode, out_filepath, repeat_allow):
             if item['r_file']:
                 r_content = update_html_tags(zin.read(item['r_file']).decode('utf-8', 'ignore'), global_idx)
                 new_r_name = re.sub(r'\[\d+\]\s*', f'[{global_idx:02d}] ', item['r_file'], count=1)
+                new_r_name = new_r_name.replace(' - Raw.html', ' (Raw).html')
                 zout.writestr(new_r_name, r_content.encode('utf-8'))
 
     for z in open_zips.values(): z.close()
@@ -359,6 +332,9 @@ def handle_epubs(files, mode, out_filepath, repeat_allow):
                 zout.writestr(zin.getinfo(item), zin.read(item))
                 copied_assets.add(item)
 
+        written_translated = []
+        written_raw = []
+
         for global_idx, item in enumerate(final_plan, 1):
             zin = open_zips[item['fp']]
 
@@ -371,8 +347,7 @@ def handle_epubs(files, mode, out_filepath, repeat_allow):
             zout.writestr(f'OEBPS/Text/{new_t_filename}', t_content.encode('utf-8'), compress_type=zipfile.ZIP_DEFLATED)
             manifest_items += f'<item id="{new_t_id}" href="Text/{new_t_filename}" media-type="application/xhtml+xml"/>\n'
             spine_items += f'<itemref idref="{new_t_id}"/>\n'
-            navmap_items += f'<navPoint id="navPoint-{play_order}" playOrder="{play_order}"><navLabel><text>{t_title}</text></navLabel><content src="Text/{new_t_filename}"/></navPoint>\n'
-            play_order += 1
+            written_translated.append((new_t_filename, t_title))
 
             # Process Raw
             if item['r_file']:
@@ -384,8 +359,25 @@ def handle_epubs(files, mode, out_filepath, repeat_allow):
                 zout.writestr(f'OEBPS/Text/{new_r_filename}', r_content.encode('utf-8'), compress_type=zipfile.ZIP_DEFLATED)
                 manifest_items += f'<item id="{new_r_id}" href="Text/{new_r_filename}" media-type="application/xhtml+xml"/>\n'
                 spine_items += f'<itemref idref="{new_r_id}"/>\n'
-                navmap_items += f'<navPoint id="navPoint-{play_order}" playOrder="{play_order}"><navLabel><text>{r_title}</text></navLabel><content src="Text/{new_r_filename}"/></navPoint>\n'
+                written_raw.append((new_r_filename, r_title))
+
+        if written_translated:
+            first_t_filename, _ = written_translated[0]
+            navmap_items += f'<navPoint id="navGroup-tl" playOrder="{play_order}">\n<navLabel><text>Translated</text></navLabel>\n<content src="Text/{first_t_filename}"/>\n'
+            play_order += 1
+            for t_filename, t_title in written_translated:
+                navmap_items += f'<navPoint id="navPoint-tl-{play_order}" playOrder="{play_order}"><navLabel><text>{t_title}</text></navLabel><content src="Text/{t_filename}"/></navPoint>\n'
                 play_order += 1
+            navmap_items += '</navPoint>\n'
+
+        if written_raw:
+            first_r_filename, _ = written_raw[0]
+            navmap_items += f'<navPoint id="navGroup-raw" playOrder="{play_order}">\n<navLabel><text>Raw</text></navLabel>\n<content src="Text/{first_r_filename}"/>\n'
+            play_order += 1
+            for r_filename, r_title in written_raw:
+                navmap_items += f'<navPoint id="navPoint-raw-{play_order}" playOrder="{play_order}"><navLabel><text>{r_title}</text></navLabel><content src="Text/{r_filename}"/></navPoint>\n'
+                play_order += 1
+            navmap_items += '</navPoint>\n'
 
         opf_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="BookId">
@@ -402,7 +394,7 @@ def handle_epubs(files, mode, out_filepath, repeat_allow):
 
         ncx_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
-<head><meta name="dtb:uid" content="{book_uuid}"/><meta name="dtb:depth" content="1"/><meta name="dtb:totalPageCount" content="0"/><meta name="dtb:maxPageNumber" content="0"/></head>
+<head><meta name="dtb:uid" content="{book_uuid}"/><meta name="dtb:depth" content="2"/><meta name="dtb:totalPageCount" content="0"/><meta name="dtb:maxPageNumber" content="0"/></head>
 <docTitle><text>{book_title}</text></docTitle>
 <navMap>
 {navmap_items}</navMap>
@@ -419,10 +411,10 @@ def print_help():
 ======================================================{C_RESET}
 
 Description:
-  This tool seamlessly merges ReadOmni downloaded files (.html Webnovel Apps,
-  .zip archives, and .epub eBooks). It concatenates their contents, entirely
-  recalculates the [XX] numbering sequence, rebuilds internal tables/TOCs,
-  and automatically preserves Calibre cover images, fonts, and stylesheets!
+  This tool seamlessly merges ReadOmni downloaded files (.zip archives and .epub eBooks).
+  It concatenates their contents, entirely recalculates the [XX] numbering sequence,
+  rebuilds internal tables/TOCs, and automatically preserves Calibre cover images,
+  fonts, and stylesheets!
 
 {C_YELLOW}Usage Modes:{C_RESET}
 
@@ -503,17 +495,13 @@ def main():
     if mode == 'directory':
         print("Note: All files will be joined in natural sequential order.\n")
         files = [f for f in os.listdir(os.getcwd()) if os.path.isfile(f)]
-        html_files = sorted([f for f in files if f.endswith('.html')], key=natural_sort_key)
         zip_files = sorted([f for f in files if f.endswith('.zip')], key=natural_sort_key)
         epub_files = sorted([f for f in files if f.endswith('.epub')], key=natural_sort_key)
 
-        if not (html_files or zip_files or epub_files):
+        if not (zip_files or epub_files):
             print(f"{C_YELLOW}No valid ReadOmni files found in the current directory.{C_RESET}")
             sys.exit(0)
 
-        if len(html_files) > 1:
-            if input(f"Found {len(html_files)} HTML files. Merge them? (y/n): ").strip().lower() == 'y':
-                handle_htmls(html_files, mode, os.path.join(out_dir, "Merged_App.html"), repeat_allow)
         if len(zip_files) > 1:
             if input(f"Found {len(zip_files)} ZIP files. Merge them? (y/n): ").strip().lower() == 'y':
                 handle_zips(zip_files, mode, os.path.join(out_dir, "Merged_Archive.zip"), repeat_allow)
@@ -537,14 +525,12 @@ def main():
         base_name = os.path.splitext(os.path.basename(files_to_process[0]))[0]
         out_filepath = os.path.join(out_dir, f"{base_name}_Merged{ext1}")
 
-        if ext1 == '.html':
-            handle_htmls(files_to_process, mode, out_filepath, repeat_allow)
-        elif ext1 == '.zip':
+        if ext1 == '.zip':
             handle_zips(files_to_process, mode, out_filepath, repeat_allow)
         elif ext1 == '.epub':
             handle_epubs(files_to_process, mode, out_filepath, repeat_allow)
         else:
-            print(f"{C_RED}Error: Unsupported file format {ext1}. Use .html, .zip, or .epub{C_RESET}")
+            print(f"{C_RED}Error: Unsupported file format {ext1}. Use .zip or .epub{C_RESET}")
 
     print(f"\n{C_BLUE}--- Process Completed! Check the 'merged' folder. ---{C_RESET}")
 
