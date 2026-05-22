@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ReadOmni Sequential ZIP & EPUB Downloader
 // @namespace    http://tampermonkey.net/
-// @version      23.0
+// @version      23.1
 // @description  Permanent Bottom Nav, Faster Watchdog, Pro UI, Box Styles, and Animated Drag & Drop Selective Downloader.
 // @author       You
 // @match        https://app.readomni.com/*
@@ -9,7 +9,7 @@
 // @grant        none
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
     const STATE_KEY = 'ro_bulk_v23_state';
@@ -27,7 +27,7 @@
         console.log(formatted);
         if (stateObj && stateObj.logs) {
             stateObj.logs.push(formatted);
-            try { localStorage.setItem(STATE_KEY, JSON.stringify(stateObj)); } catch(e) {}
+            try { localStorage.setItem(STATE_KEY, JSON.stringify(stateObj)); } catch (e) { }
         }
     }
 
@@ -43,7 +43,7 @@
                 else if (Date.now() > endTime) resolve(null);
                 else setTimeout(check, 100);
             };
-                check();
+            check();
         });
     }
 
@@ -56,7 +56,7 @@
     }
 
     function generateUUID() {
-        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
             var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
             return v.toString(16);
         });
@@ -238,8 +238,8 @@
         Object.assign(overlay.style, {
             position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh',
             backgroundColor: 'rgba(0, 0, 0, 0.95)', zIndex: '9999999',
-                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                      color: 'white', fontFamily: 'sans-serif', gap: '12px'
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+            color: 'white', fontFamily: 'sans-serif', gap: '12px'
         });
 
         let html = `<h1 style="margin: 0; font-size: 24px;">🎉 Extraction Complete</h1>`;
@@ -499,8 +499,8 @@
         Object.assign(overlay.style, {
             position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh',
             backgroundColor: 'rgba(0, 0, 0, 0.85)', zIndex: '9999999',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      fontFamily: 'sans-serif'
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontFamily: 'sans-serif'
         });
 
         overlay.innerHTML = `
@@ -532,7 +532,7 @@
             overlay.remove();
 
             if (mode === 'sequential') {
-                const firstLink = document.querySelector('a[href*="/translation/"]');
+                const firstLink = Array.from(document.querySelectorAll('a[href*="/translation/"]')).find(l => l.closest('[role="button"]'));
                 if (!firstLink) return alert("Could not find any chapters to start with!");
                 initSequential(firstLink.href, chosenTitle);
             } else {
@@ -575,7 +575,7 @@
         Object.assign(loading.style, {
             position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh',
             backgroundColor: 'rgba(0,0,0,0.85)', zIndex: '9999999', display: 'flex',
-                      flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#fff'
+            flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#fff'
         });
         loading.innerHTML = `<h2 style="margin:0 0 10px;font-size:22px;">Scraping Chapter List...</h2><p style="color:#aaa;font-size:14px;">This might take a few seconds.</p>`;
         document.body.appendChild(loading);
@@ -596,8 +596,8 @@
 
             let allLinksMap = new Map();
 
-            while(true) {
-                const links = document.querySelectorAll('a[href*="/translation/"]');
+            while (true) {
+                const links = Array.from(document.querySelectorAll('a[href*="/translation/"]')).filter(l => l.closest('[role="button"]'));
                 links.forEach(l => {
                     const titleEl = l.querySelector('h3') || l.querySelector('span.truncate') || l;
                     allLinksMap.set(l.href, titleEl.textContent.trim());
@@ -614,18 +614,19 @@
                 fireOmniClick(nextBtn);
 
                 let changed = false;
-                for(let i=0; i<30; i++) {
+                for (let i = 0; i < 30; i++) {
                     await sleep(100);
-                    const newFirst = document.querySelector('a[href*="/translation/"]')?.href;
-                    if(newFirst && newFirst !== firstHref) { changed = true; break; }
+                    const firstLink = Array.from(document.querySelectorAll('a[href*="/translation/"]')).find(l => l.closest('[role="button"]'));
+                    const newFirst = firstLink?.href;
+                    if (newFirst && newFirst !== firstHref) { changed = true; break; }
                 }
-                if(!changed) break;
+                if (!changed) break;
                 await sleep(200);
             }
 
             loading.remove();
 
-            let rawList = Array.from(allLinksMap.entries()).map(([url, title]) => ({url, title, selected: true}));
+            let rawList = Array.from(allLinksMap.entries()).map(([url, title]) => ({ url, title, selected: true }));
 
             // Reverse to get First -> Current
             rawList.reverse();
@@ -637,7 +638,7 @@
 
             showSelectiveUI(rawList, threadName, window.location.href);
 
-        } catch(e) {
+        } catch (e) {
             loading.remove();
             alert("Error during scraping: " + e.message);
         }
@@ -648,7 +649,7 @@
         Object.assign(ui.style, {
             position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh',
             backgroundColor: 'var(--background, #fdfdfd)', color: 'var(--foreground, #111)', zIndex: '9999999',
-                      display: 'flex', flexDirection: 'column', fontFamily: 'sans-serif'
+            display: 'flex', flexDirection: 'column', fontFamily: 'sans-serif'
         });
 
         ui.innerHTML = `
@@ -682,7 +683,7 @@
 
             Object.assign(row.style, {
                 display: 'flex', alignItems: 'center', padding: '12px 24px', borderBottom: '1px solid var(--border, #eaeaea)',
-                          cursor: 'pointer', userSelect: 'none', transition: 'background 0.1s'
+                cursor: 'pointer', userSelect: 'none', transition: 'background 0.1s'
             });
 
             row.innerHTML = `
@@ -762,194 +763,194 @@
             }, 500);
         });
 
-        const clearPress = () => { if(longPressTimer) clearTimeout(longPressTimer); };
+        const clearPress = () => { if (longPressTimer) clearTimeout(longPressTimer); };
         window.addEventListener('pointerup', clearPress);
         window.addEventListener('pointercancel', clearPress);
         listContainer.addEventListener('pointermove', (e) => {
             if (longPressTimer && Math.abs(e.clientY - pressStartY) > 10) clearPress();
         });
 
-            document.getElementById('ro-sel-all').onclick = () => {
-                Array.from(listContainer.children).forEach(row => {
-                    row.classList.add('selected');
-                    row.querySelector('input').checked = true;
-                });
-            };
+        document.getElementById('ro-sel-all').onclick = () => {
+            Array.from(listContainer.children).forEach(row => {
+                row.classList.add('selected');
+                row.querySelector('input').checked = true;
+            });
+        };
 
-            document.getElementById('ro-sel-none').onclick = () => {
-                Array.from(listContainer.children).forEach(row => {
-                    row.classList.remove('selected');
-                    row.querySelector('input').checked = false;
-                });
-            };
+        document.getElementById('ro-sel-none').onclick = () => {
+            Array.from(listContainer.children).forEach(row => {
+                row.classList.remove('selected');
+                row.querySelector('input').checked = false;
+            });
+        };
 
-            // --- Interaction Logic: Drag & Drop Reordering with Auto-Scroll ---
-            let dragInfo = null;
-            let autoScrollInterval = null;
-            let lastClientY = 0;
+        // --- Interaction Logic: Drag & Drop Reordering with Auto-Scroll ---
+        let dragInfo = null;
+        let autoScrollInterval = null;
+        let lastClientY = 0;
 
-            function stopAutoScroll() {
-                if (autoScrollInterval) clearInterval(autoScrollInterval);
-                autoScrollInterval = null;
+        function stopAutoScroll() {
+            if (autoScrollInterval) clearInterval(autoScrollInterval);
+            autoScrollInterval = null;
+        }
+
+        function checkDragOverlap(clientY) {
+            if (!dragInfo) return;
+            const { row, ghost, pointerOffsetY } = dragInfo;
+
+            ghost.style.top = (clientY - pointerOffsetY) + 'px';
+
+            const siblings = Array.from(listContainer.children).filter(c => c !== row && !c.classList.contains('ro-placeholder'));
+            const ghostCenter = clientY - pointerOffsetY + (ghost.offsetHeight / 2);
+
+            let insertBeforeNode = null;
+            for (let sibling of siblings) {
+                const sRect = sibling.getBoundingClientRect();
+                const sCenter = sRect.top + sRect.height / 2;
+                if (ghostCenter < sCenter) {
+                    insertBeforeNode = sibling;
+                    break;
+                }
             }
 
-            function checkDragOverlap(clientY) {
-                if (!dragInfo) return;
-                const { row, ghost, pointerOffsetY } = dragInfo;
+            if (row.nextElementSibling !== insertBeforeNode) {
+                const rects = new Map();
+                siblings.forEach(s => rects.set(s, s.getBoundingClientRect().top));
 
-                ghost.style.top = (clientY - pointerOffsetY) + 'px';
+                listContainer.insertBefore(row, insertBeforeNode);
 
-                const siblings = Array.from(listContainer.children).filter(c => c !== row && !c.classList.contains('ro-placeholder'));
-                const ghostCenter = clientY - pointerOffsetY + (ghost.offsetHeight / 2);
-
-                let insertBeforeNode = null;
-                for (let sibling of siblings) {
-                    const sRect = sibling.getBoundingClientRect();
-                    const sCenter = sRect.top + sRect.height / 2;
-                    if (ghostCenter < sCenter) {
-                        insertBeforeNode = sibling;
-                        break;
+                siblings.forEach(s => {
+                    const oldTop = rects.get(s);
+                    const newTop = s.getBoundingClientRect().top;
+                    const dY = oldTop - newTop;
+                    if (dY !== 0) {
+                        s.style.transform = `translateY(${dY}px)`;
+                        s.style.transition = 'none';
+                        requestAnimationFrame(() => {
+                            s.style.transform = '';
+                            s.style.transition = 'transform 0.25s cubic-bezier(0.2, 0, 0, 1)';
+                        });
                     }
-                }
+                });
+            }
+        }
 
-                if (row.nextElementSibling !== insertBeforeNode) {
-                    const rects = new Map();
-                    siblings.forEach(s => rects.set(s, s.getBoundingClientRect().top));
+        listContainer.addEventListener('pointerdown', (e) => {
+            const handle = e.target.closest('.ro-drag-handle');
+            if (!handle) return;
 
-                    listContainer.insertBefore(row, insertBeforeNode);
+            const row = e.target.closest('.ro-list-row');
+            if (!row) return;
 
-                    siblings.forEach(s => {
-                        const oldTop = rects.get(s);
-                        const newTop = s.getBoundingClientRect().top;
-                        const dY = oldTop - newTop;
-                        if (dY !== 0) {
-                            s.style.transform = `translateY(${dY}px)`;
-                            s.style.transition = 'none';
-                            requestAnimationFrame(() => {
-                                s.style.transform = '';
-                                s.style.transition = 'transform 0.25s cubic-bezier(0.2, 0, 0, 1)';
-                            });
-                        }
-                    });
-                }
+            e.preventDefault();
+            e.stopPropagation();
+
+            try { handle.setPointerCapture(e.pointerId); } catch (err) { }
+
+            const rect = row.getBoundingClientRect();
+
+            const ghost = row.cloneNode(true);
+            ghost.style.position = 'fixed';
+            ghost.style.top = rect.top + 'px';
+            ghost.style.left = rect.left + 'px';
+            ghost.style.width = rect.width + 'px';
+            ghost.style.height = rect.height + 'px';
+            ghost.style.zIndex = '9999999';
+            ghost.style.opacity = '0.95';
+            ghost.style.boxShadow = '0 10px 25px rgba(0,0,0,0.3)';
+            ghost.style.transition = 'none';
+            ghost.style.pointerEvents = 'none';
+            document.body.appendChild(ghost);
+
+            row.style.opacity = '0.3';
+            row.style.background = 'var(--muted, #eee)';
+            row.classList.add('ro-placeholder');
+
+            dragInfo = {
+                row, ghost, handle,
+                pointerOffsetY: e.clientY - rect.top
+            };
+        });
+
+        window.addEventListener('pointermove', (e) => {
+            if (!dragInfo) return;
+            lastClientY = e.clientY;
+            checkDragOverlap(lastClientY);
+
+            // Auto-scroll logic
+            const listRect = listContainer.getBoundingClientRect();
+            const threshold = 60; // Distance from edge to trigger scroll
+            let scrollDir = 0;
+
+            if (lastClientY < listRect.top + threshold) {
+                scrollDir = -1;
+            } else if (lastClientY > listRect.bottom - threshold) {
+                scrollDir = 1;
             }
 
-            listContainer.addEventListener('pointerdown', (e) => {
-                const handle = e.target.closest('.ro-drag-handle');
-                if (!handle) return;
-
-                const row = e.target.closest('.ro-list-row');
-                if (!row) return;
-
-                e.preventDefault();
-                e.stopPropagation();
-
-                try { handle.setPointerCapture(e.pointerId); } catch(err){}
-
-                const rect = row.getBoundingClientRect();
-
-                const ghost = row.cloneNode(true);
-                ghost.style.position = 'fixed';
-                ghost.style.top = rect.top + 'px';
-                ghost.style.left = rect.left + 'px';
-                ghost.style.width = rect.width + 'px';
-                ghost.style.height = rect.height + 'px';
-                ghost.style.zIndex = '9999999';
-                ghost.style.opacity = '0.95';
-                ghost.style.boxShadow = '0 10px 25px rgba(0,0,0,0.3)';
-                ghost.style.transition = 'none';
-                ghost.style.pointerEvents = 'none';
-                document.body.appendChild(ghost);
-
-                row.style.opacity = '0.3';
-                row.style.background = 'var(--muted, #eee)';
-                row.classList.add('ro-placeholder');
-
-                dragInfo = {
-                    row, ghost, handle,
-                    pointerOffsetY: e.clientY - rect.top
-                };
-            });
-
-            window.addEventListener('pointermove', (e) => {
-                if (!dragInfo) return;
-                lastClientY = e.clientY;
-                checkDragOverlap(lastClientY);
-
-                // Auto-scroll logic
-                const listRect = listContainer.getBoundingClientRect();
-                const threshold = 60; // Distance from edge to trigger scroll
-                let scrollDir = 0;
-
-                if (lastClientY < listRect.top + threshold) {
-                    scrollDir = -1;
-                } else if (lastClientY > listRect.bottom - threshold) {
-                    scrollDir = 1;
-                }
-
-                if (scrollDir !== 0 && !autoScrollInterval) {
-                    autoScrollInterval = setInterval(() => {
-                        listContainer.scrollTop += scrollDir * 12;
-                        checkDragOverlap(lastClientY);
-                    }, 16);
-                } else if (scrollDir === 0 && autoScrollInterval) {
-                    stopAutoScroll();
-                }
-            });
-
-            window.addEventListener('pointerup', (e) => {
-                if (!dragInfo) return;
-                const { row, ghost, handle } = dragInfo;
-
+            if (scrollDir !== 0 && !autoScrollInterval) {
+                autoScrollInterval = setInterval(() => {
+                    listContainer.scrollTop += scrollDir * 12;
+                    checkDragOverlap(lastClientY);
+                }, 16);
+            } else if (scrollDir === 0 && autoScrollInterval) {
                 stopAutoScroll();
-                try { handle.releasePointerCapture(e.pointerId); } catch(err){}
+            }
+        });
 
-                const finalRect = row.getBoundingClientRect();
-                ghost.style.transition = 'top 0.2s cubic-bezier(0.2, 0, 0, 1), left 0.2s cubic-bezier(0.2, 0, 0, 1)';
-                ghost.style.top = finalRect.top + 'px';
-                ghost.style.left = finalRect.left + 'px';
+        window.addEventListener('pointerup', (e) => {
+            if (!dragInfo) return;
+            const { row, ghost, handle } = dragInfo;
 
-                dragInfo = null;
+            stopAutoScroll();
+            try { handle.releasePointerCapture(e.pointerId); } catch (err) { }
 
-                setTimeout(() => {
-                    if (ghost && ghost.parentNode) ghost.remove();
-                    row.style.opacity = '';
-                    row.style.background = '';
-                    row.classList.remove('ro-placeholder');
-                }, 200);
+            const finalRect = row.getBoundingClientRect();
+            ghost.style.transition = 'top 0.2s cubic-bezier(0.2, 0, 0, 1), left 0.2s cubic-bezier(0.2, 0, 0, 1)';
+            ghost.style.top = finalRect.top + 'px';
+            ghost.style.left = finalRect.left + 'px';
+
+            dragInfo = null;
+
+            setTimeout(() => {
+                if (ghost && ghost.parentNode) ghost.remove();
+                row.style.opacity = '';
+                row.style.background = '';
+                row.classList.remove('ro-placeholder');
+            }, 200);
+        });
+
+        // --- Execute Actions ---
+        document.getElementById('ro-sel-cancel').onclick = () => ui.remove();
+
+        document.getElementById('ro-sel-start').onclick = () => {
+            const finalQueue = [];
+            Array.from(listContainer.children).forEach(row => {
+                if (row.classList.contains('selected') && !row.classList.contains('ro-placeholder')) {
+                    finalQueue.push({ url: row.dataset.url, title: row.dataset.title });
+                }
             });
 
-            // --- Execute Actions ---
-            document.getElementById('ro-sel-cancel').onclick = () => ui.remove();
+            if (finalQueue.length === 0) return alert("No chapters selected!");
 
-            document.getElementById('ro-sel-start').onclick = () => {
-                const finalQueue = [];
-                Array.from(listContainer.children).forEach(row => {
-                    if (row.classList.contains('selected') && !row.classList.contains('ro-placeholder')) {
-                        finalQueue.push({ url: row.dataset.url, title: row.dataset.title });
-                    }
-                });
+            const chosenTitle = document.getElementById('ro-sel-title').value.trim() || 'ReadOmni_Book';
+            ui.remove();
 
-                if (finalQueue.length === 0) return alert("No chapters selected!");
-
-                const chosenTitle = document.getElementById('ro-sel-title').value.trim() || 'ReadOmni_Book';
-                ui.remove();
-
-                const runId = Date.now().toString();
-                sessionStorage.setItem(LOCK_KEY, runId);
-                const state = {
-                    mode: 'selective', active: true, runId: runId,
-                    threadUrl: threadUrl, includeRaws: true,
-                    threadName: chosenTitle, count: 1, retryCount: 0, files: [], logs: [],
-                    queue: finalQueue, queueIndex: 0
-                };
-                logDebug(state, `--- NEW RUN INITIALIZED (V23.0 Selective) Total: ${finalQueue.length} ---`);
-                localStorage.setItem(STATE_KEY, JSON.stringify(state));
-
-                const runUrl = new URL(finalQueue[0].url, window.location.origin);
-                runUrl.searchParams.set('ro_start_download', 'true');
-                window.location.href = runUrl.toString();
+            const runId = Date.now().toString();
+            sessionStorage.setItem(LOCK_KEY, runId);
+            const state = {
+                mode: 'selective', active: true, runId: runId,
+                threadUrl: threadUrl, includeRaws: true,
+                threadName: chosenTitle, count: 1, retryCount: 0, files: [], logs: [],
+                queue: finalQueue, queueIndex: 0
             };
+            logDebug(state, `--- NEW RUN INITIALIZED (V23.0 Selective) Total: ${finalQueue.length} ---`);
+            localStorage.setItem(STATE_KEY, JSON.stringify(state));
+
+            const runUrl = new URL(finalQueue[0].url, window.location.origin);
+            runUrl.searchParams.set('ro_start_download', 'true');
+            window.location.href = runUrl.toString();
+        };
     }
 
     async function cancelDownload() {
@@ -982,9 +983,9 @@
         btn.innerHTML = `🛑 Cancel Auto-Download (Attempting: ${count})`;
         Object.assign(btn.style, {
             position: 'fixed', top: '20px', left: '50%', transform: 'translateX(-50%)',
-                      zIndex: '999999', padding: '10px 20px', backgroundColor: '#ef4444',
-                      color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer',
-                      fontWeight: 'bold', boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+            zIndex: '999999', padding: '10px 20px', backgroundColor: '#ef4444',
+            color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer',
+            fontWeight: 'bold', boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
         });
         btn.onclick = cancelDownload;
         document.body.appendChild(btn);
