@@ -5,7 +5,7 @@ import zipfile
 import uuid
 import sys
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 # Terminal Colors
 C_GREEN = '\033[92m'
@@ -23,28 +23,32 @@ def extract_h1_title(html_content):
     return "Unknown Title"
 
 def update_html_tags(html_content, new_num):
-    """Updates the <title> and <h1> tags with the new sequential [XX] number."""
+    """Updates the <title>, <h1>, and cross-links with the new sequential number and normalizes suffixes."""
+    # Normalize suffixes
+    html_content = html_content.replace(' - Raw</title>', ' (Raw)</title>')
+    html_content = html_content.replace(' - Raw</h1>', ' (Raw)</h1>')
+
+    # Update <title> tag
     html_content = re.sub(r'<title>\[\d+\]\s*(.*?)</title>', fr'<title>[{new_num:02d}] \1</title>', html_content)
-    html_content = re.sub(r'<h1>\[\d+\]\s*(.*?)</h1>', fr'<h1>[{new_num:02d}] \1</h1>', html_content)
+    
+    # Update cross-link destinations in combined EPUB
+    html_content = re.sub(
+        r'(href="(?:Text/)?chapter_(raw|trans)_)(\d+)(\.html")',
+        lambda m: f"{m.group(1)}{new_num:03d}{m.group(4)}",
+        html_content
+    )
+
+    # Update <h1> tag numbering (handles plain h1 and h1 with nested a tags)
+    def h1_replace(match):
+        h1_inner = match.group(1)
+        h1_inner = re.sub(r'\[\d+\]\s*', f'[{new_num:02d}] ', h1_inner, count=1)
+        h1_inner = h1_inner.replace(' - Raw', ' (Raw)')
+        return f"<h1>{h1_inner}</h1>"
+
+    html_content = re.sub(r'<h1>(.*?)</h1>', h1_replace, html_content, flags=re.DOTALL | re.IGNORECASE)
     return html_content
 
-def parse_html_app(filepath):
-    """Extracts chapters from a Webnovel App HTML file."""
-    chapters = []
-    base_content = None
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
-        base_content = content
-        match = re.search(r'const chapters = (\[.*?\]);\s*const BOOK_ID', content, re.DOTALL)
-        if match:
-            chaps = json.loads(match.group(1))
-            for idx, chap in enumerate(chaps):
-                chapters.append({
-                    'id': idx,
-                    'title': chap.get('title', f"Chapter {idx}"),
-                    'chap_data': chap
-                })
-    return chapters, base_content
+
 
 def parse_zip(filepath):
     """Extracts chapters from a ZIP Archive."""
@@ -139,27 +143,7 @@ def read_plan_file(plan_path, original_chapters):
                     
     return new_order
 
-def rebuild_html_app(new_chapters, base_content, out_filepath):
-    print(f"  {C_BLUE}[*] Rebuilding Webnovel App HTML...{C_RESET}")
-    final_chaps = []
-    
-    for idx, chap in enumerate(new_chapters, start=1):
-        data = chap['chap_data'].copy()
-        # Update title numbering
-        data['title'] = re.sub(r'^\[\d+\]\s*', f'[{idx:02d}] ', data.get('title', ''))
-        # Update internal HTML
-        if 'content' in data:
-            data['content'] = update_html_tags(data['content'], idx)
-        if 'rawContent' in data and data['rawContent']:
-            data['rawContent'] = update_html_tags(data['rawContent'], idx)
-        final_chaps.append(data)
-        
-    match = re.search(r'(const chapters = )(\[.*?\])(;\s*const BOOK_ID)', base_content, re.DOTALL)
-    new_json_str = json.dumps(final_chaps, ensure_ascii=False).replace('</', '<\\/')
-    new_content = base_content[:match.start(2)] + new_json_str + base_content[match.end(2):]
 
-    with open(out_filepath, 'w', encoding='utf-8') as f:
-        f.write(new_content)
 
 def rebuild_zip(new_chapters, in_filepath, out_filepath):
     print(f"  {C_BLUE}[*] Rebuilding ZIP Archive...{C_RESET}")
@@ -182,6 +166,7 @@ def rebuild_zip(new_chapters, in_filepath, out_filepath):
             if chap['r_file']:
                 r_content = update_html_tags(zin.read(chap['r_file']).decode('utf-8', 'ignore'), idx)
                 new_r_name = re.sub(r'\[\d+\]\s*', f'[{idx:02d}] ', chap['r_file'], count=1)
+                new_r_name = new_r_name.replace(' - Raw.html', ' (Raw).html')
                 zout.writestr(new_r_name, r_content.encode('utf-8'))
 
 def rebuild_epub(new_chapters, in_filepath, out_filepath):
@@ -238,6 +223,9 @@ def rebuild_epub(new_chapters, in_filepath, out_filepath):
             zout.writestr(zin.getinfo(item), zin.read(item))
             copied_assets.add(item)
 
+        written_translated = []
+        written_raw = []
+
         for idx, chap in enumerate(new_chapters, start=1):
             # Process Translated
             t_content = update_html_tags(zin.read(chap['t_file']).decode('utf-8', 'ignore'), idx)
@@ -248,8 +236,7 @@ def rebuild_epub(new_chapters, in_filepath, out_filepath):
             zout.writestr(f'OEBPS/Text/{new_t_filename}', t_content.encode('utf-8'), compress_type=zipfile.ZIP_DEFLATED)
             manifest_items += f'<item id="{new_t_id}" href="Text/{new_t_filename}" media-type="application/xhtml+xml"/>\n'
             spine_items += f'<itemref idref="{new_t_id}"/>\n'
-            navmap_items += f'<navPoint id="navPoint-{play_order}" playOrder="{play_order}"><navLabel><text>{t_title}</text></navLabel><content src="Text/{new_t_filename}"/></navPoint>\n'
-            play_order += 1
+            written_translated.append((new_t_filename, t_title))
             
             # Process Raw
             if chap['r_file']:
@@ -261,8 +248,25 @@ def rebuild_epub(new_chapters, in_filepath, out_filepath):
                 zout.writestr(f'OEBPS/Text/{new_r_filename}', r_content.encode('utf-8'), compress_type=zipfile.ZIP_DEFLATED)
                 manifest_items += f'<item id="{new_r_id}" href="Text/{new_r_filename}" media-type="application/xhtml+xml"/>\n'
                 spine_items += f'<itemref idref="{new_r_id}"/>\n'
-                navmap_items += f'<navPoint id="navPoint-{play_order}" playOrder="{play_order}"><navLabel><text>{r_title}</text></navLabel><content src="Text/{new_r_filename}"/></navPoint>\n'
+                written_raw.append((new_r_filename, r_title))
+
+        if written_translated:
+            first_t_filename, _ = written_translated[0]
+            navmap_items += f'<navPoint id="navGroup-tl" playOrder="{play_order}">\n<navLabel><text>Translated</text></navLabel>\n<content src="Text/{first_t_filename}"/>\n'
+            play_order += 1
+            for t_filename, t_title in written_translated:
+                navmap_items += f'<navPoint id="navPoint-tl-{play_order}" playOrder="{play_order}"><navLabel><text>{t_title}</text></navLabel><content src="Text/{t_filename}"/></navPoint>\n'
                 play_order += 1
+            navmap_items += '</navPoint>\n'
+
+        if written_raw:
+            first_r_filename, _ = written_raw[0]
+            navmap_items += f'<navPoint id="navGroup-raw" playOrder="{play_order}">\n<navLabel><text>Raw</text></navLabel>\n<content src="Text/{first_r_filename}"/>\n'
+            play_order += 1
+            for r_filename, r_title in written_raw:
+                navmap_items += f'<navPoint id="navPoint-raw-{play_order}" playOrder="{play_order}"><navLabel><text>{r_title}</text></navLabel><content src="Text/{r_filename}"/></navPoint>\n'
+                play_order += 1
+            navmap_items += '</navPoint>\n'
 
         opf_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="BookId">
@@ -279,7 +283,7 @@ def rebuild_epub(new_chapters, in_filepath, out_filepath):
 
         ncx_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
-<head><meta name="dtb:uid" content="{book_uuid}"/><meta name="dtb:depth" content="1"/><meta name="dtb:totalPageCount" content="0"/><meta name="dtb:maxPageNumber" content="0"/></head>
+<head><meta name="dtb:uid" content="{book_uuid}"/><meta name="dtb:depth" content="2"/><meta name="dtb:totalPageCount" content="0"/><meta name="dtb:maxPageNumber" content="0"/></head>
 <docTitle><text>{book_title}</text></docTitle>
 <navMap>
 {navmap_items}</navMap>
@@ -294,7 +298,7 @@ def main():
 ======================================================{C_RESET}
 Usage: python reorder_readomni.py <target_file>
 
-Supports .html (App), .zip, and .epub files.
+Supports .zip and .epub files.
 
 How it works:
   1. The script reads your file and generates a 'reorder_plan.txt'.
@@ -319,9 +323,7 @@ How it works:
     print(f"\n{C_BLUE}[*] Reading original file: {filepath}{C_RESET}")
     
     try:
-        if ext == '.html':
-            chapters, base_content = parse_html_app(filepath)
-        elif ext == '.zip':
+        if ext == '.zip':
             chapters, base_content = parse_zip(filepath)
         elif ext == '.epub':
             chapters, base_content = parse_epub(filepath)
@@ -361,9 +363,7 @@ How it works:
     # 3. Rebuild
     print(f"\n{C_BLUE}[*] Processing new order ({len(new_chapters)} chapters)...{C_RESET}")
     
-    if ext == '.html':
-        rebuild_html_app(new_chapters, base_content, out_filepath)
-    elif ext == '.zip':
+    if ext == '.zip':
         rebuild_zip(new_chapters, filepath, out_filepath)
     elif ext == '.epub':
         rebuild_epub(new_chapters, filepath, out_filepath)
