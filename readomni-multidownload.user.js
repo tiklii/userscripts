@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ReadOmni Sequential ZIP & EPUB Downloader
 // @namespace    http://tampermonkey.net/
-// @version      23.2
+// @version      23.3
 // @description  Permanent Bottom Nav, Faster Watchdog, Pro UI, Box Styles, and Animated Drag & Drop Selective Downloader.
 // @author       You
 // @match        https://app.readomni.com/*
@@ -33,6 +33,17 @@
 
     // --- HELPER FUNCTIONS ---
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    function isCancelled() {
+        const stateStr = localStorage.getItem(STATE_KEY);
+        if (!stateStr) return true;
+        try {
+            const state = JSON.parse(stateStr);
+            return !state.active;
+        } catch (e) {
+            return true;
+        }
+    }
 
     async function waitForElement(selector, timeout = 10000) {
         return new Promise((resolve) => {
@@ -368,13 +379,15 @@
         logDebug(state, "Started/Resumed processQueue.");
 
         while (state.active) {
-            if (!localStorage.getItem(STATE_KEY)) return;
+            if (isCancelled()) return;
 
             logDebug(state, `Processing chapter #${state.count}`);
             showCancelButton(state.count);
 
             await sleep(400);
+            if (isCancelled()) return;
             const h1 = await waitForElement('h1');
+            if (isCancelled()) return;
 
             if (!h1) {
                 logDebug(state, "ERROR: Missing H1 tag. Halting.");
@@ -391,6 +404,7 @@
             if (translatedTab && translatedTab.getAttribute('aria-selected') !== 'true') {
                 fireOmniClick(translatedTab);
                 await sleep(300);
+                if (isCancelled()) return;
             }
             let extractedHTMLBlocks = extractChapterHTMLBlocks();
 
@@ -401,23 +415,41 @@
                 if (rawTab.getAttribute('aria-selected') !== 'true') {
                     fireOmniClick(rawTab);
                     await sleep(400);
+                    if (isCancelled()) return;
                 }
                 rawHTMLBlocks = extractChapterHTMLBlocks();
             }
             if (translatedTab) {
                 fireOmniClick(translatedTab);
                 await sleep(200);
+                if (isCancelled()) return;
             }
 
-            if (extractedHTMLBlocks && extractedHTMLBlocks.length > 0) {
+            const hasRawTab = !!rawTab;
+            const collectedTranslated = !!(extractedHTMLBlocks && extractedHTMLBlocks.trim().length > 0);
+            const collectedRaw = !hasRawTab || !!(rawHTMLBlocks && rawHTMLBlocks.trim().length > 0);
+
+            if (collectedTranslated && collectedRaw) {
                 state.retryCount = 0;
+                
+                // Re-read current state from localStorage to ensure we don't overwrite user cancellation
+                const freshStr = localStorage.getItem(STATE_KEY);
+                if (!freshStr) return;
+                state = JSON.parse(freshStr);
+                if (!state.active) return;
+
                 state.files.push({ rawTitle: rawTitleText, content: extractedHTMLBlocks, rawContent: rawHTMLBlocks });
                 logDebug(state, `Collected: ${rawTitleText} (Trans: ${extractedHTMLBlocks.length}, Raw: ${rawHTMLBlocks ? rawHTMLBlocks.length : 0})`);
             } else {
-                logDebug(state, `WARNING: Extracted HTML was empty for ${rawTitleText}`);
+                logDebug(state, `WARNING: Extracted HTML was empty or incomplete for ${rawTitleText}. (Trans collected: ${collectedTranslated}, Raw collected: ${collectedRaw})`);
                 if (!state.retryCount) state.retryCount = 0;
                 if (state.retryCount < 1) {
-                    state.retryCount++;
+                    const freshStr = localStorage.getItem(STATE_KEY);
+                    if (!freshStr) return;
+                    state = JSON.parse(freshStr);
+                    if (!state.active) return;
+
+                    state.retryCount = 1;
                     localStorage.setItem(STATE_KEY, JSON.stringify(state));
                     logDebug(state, "Retrying chapter... Forcing hard reload.");
                     window.location.reload();
@@ -427,6 +459,8 @@
                     state.retryCount = 0;
                 }
             }
+
+            if (isCancelled()) return;
 
             // Route execution based on mode
             if (state.mode === 'selective') {
@@ -438,6 +472,17 @@
                     return;
                 }
                 state.count++;
+                
+                const freshStr = localStorage.getItem(STATE_KEY);
+                if (!freshStr) return;
+                let freshState = JSON.parse(freshStr);
+                if (!freshState.active) return;
+                
+                freshState.queueIndex = state.queueIndex;
+                freshState.count = state.count;
+                freshState.files = state.files;
+                state = freshState;
+
                 try { localStorage.setItem(STATE_KEY, JSON.stringify(state)); } catch (e) {
                     logDebug(state, "Storage limit hit. Generating early package.");
                     state.active = false;
@@ -451,6 +496,8 @@
             else {
                 // Sequential Mode
                 const prevBtn = await waitForElement('[aria-label="Previous chapter"]');
+                if (isCancelled()) return;
+
                 if (!prevBtn || prevBtn.hasAttribute('disabled') || prevBtn.tagName.toLowerCase() === 'button') {
                     logDebug(state, "Reached the end of sequential chapter sequence.");
                     state.active = false;
@@ -459,6 +506,16 @@
                 }
 
                 state.count++;
+                
+                const freshStr = localStorage.getItem(STATE_KEY);
+                if (!freshStr) return;
+                let freshState = JSON.parse(freshStr);
+                if (!freshState.active) return;
+                
+                freshState.count = state.count;
+                freshState.files = state.files;
+                state = freshState;
+
                 try { localStorage.setItem(STATE_KEY, JSON.stringify(state)); } catch (e) {
                     state.active = false; await prepareDownloads(state); return;
                 }
@@ -469,7 +526,7 @@
                 let contentChanged = false;
                 for (let i = 0; i < 45; i++) {
                     await sleep(100);
-                    if (!localStorage.getItem(STATE_KEY)) return;
+                    if (isCancelled()) return;
                     const checkH1 = document.querySelector('h1');
                     if (checkH1) {
                         let checkTitle = checkH1.textContent.trim();
@@ -979,6 +1036,14 @@
             const state = JSON.parse(stateStr);
             logDebug(state, "User clicked Cancel. Triggering early extraction.");
             state.active = false;
+            // Mark state as inactive and remove lock IMMEDIATELY so processQueue halts instantly
+            localStorage.setItem(STATE_KEY, JSON.stringify(state));
+            sessionStorage.removeItem(LOCK_KEY);
+
+            // Remove cancel button so user can't double-click it
+            const btn = document.getElementById('ro-cancel-btn');
+            if (btn) btn.remove();
+
             await prepareDownloads(state);
         } else {
             window.location.reload();
