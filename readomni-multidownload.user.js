@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         ReadOmni Sequential ZIP & EPUB Downloader
+// @name         ReadOmni Chapters ZIP & EPUB Downloader
 // @namespace    https://github.com/tiklii/userscripts
-// @version      23.4
-// @description  Download chapters from readomni.
+// @version      25
+// @description  Download chapters from readomni
 // @author       tiklii
 // @match        https://app.readomni.com/*
 // @require      https://cdn.jsdelivr.net/npm/@zip.js/zip.js@2.8.26/dist/zip.min.js
@@ -54,7 +54,7 @@
                 else if (Date.now() > endTime) resolve(null);
                 else setTimeout(check, 100);
             };
-            check();
+                check();
         });
     }
 
@@ -88,6 +88,31 @@
     function getBookTitle() {
         const threadH1 = document.querySelector('h1');
         return threadH1 && threadH1.textContent ? threadH1.textContent.trim().replace(/[\/\\?%*:|"<>]/g, '_') : 'ReadOmni_Book';
+    }
+
+    function getChapterLinksFromPage() {
+        const allLinks = Array.from(document.querySelectorAll('a[href*="/translation/"]'));
+        return allLinks.filter(l => {
+            if (l.closest('aside')) return false;
+            // Filter out top "Continue reading" shortcut banner
+            if (l.textContent.includes('Continue reading')) return false;
+            return Boolean(l.href && l.href.includes('/translation/'));
+        });
+    }
+
+    function extractChapterTitle(linkEl) {
+        const p = linkEl.querySelector('p');
+        if (p && p.textContent.trim()) return p.textContent.trim();
+
+        const h3 = linkEl.querySelector('h3');
+        if (h3 && h3.textContent.trim()) return h3.textContent.trim();
+
+        const truncateSpan = linkEl.querySelector('span.truncate, [class*="truncate"]');
+        if (truncateSpan && truncateSpan.textContent.trim()) return truncateSpan.textContent.trim();
+
+        const clone = linkEl.cloneNode(true);
+        clone.querySelectorAll('.tabular-nums, svg, button').forEach(el => el.remove());
+        return clone.textContent.trim() || 'Untitled Chapter';
     }
 
     // --- HTML TEMPLATES ---
@@ -130,6 +155,9 @@
         if (textWrappers.length === 0) {
             textWrappers = Array.from(activeTab.querySelectorAll('.relative.group .w-full > div:last-child'));
         }
+        if (textWrappers.length === 0) {
+            textWrappers = Array.from(activeTab.querySelectorAll('.prose, [class*="prose"]'));
+        }
         if (textWrappers.length === 0) return "";
 
         let htmlBlocks = [];
@@ -162,7 +190,6 @@
         const containerXml = `<?xml version="1.0" encoding="UTF-8"?>\n<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">\n<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>\n</container>`;
         await zipWriter.add("META-INF/container.xml", new zip.TextReader(containerXml));
 
-        // Inject Stylesheet File
         const cssContent = `body { font-family: sans-serif; line-height: 1.6; padding: 2% 5%; color: #111; background: #fff; } h1 { text-align: center; margin-bottom: 1.5em; font-size: 1.6em; padding-bottom: 0.5em; border-bottom: 1px solid #eaeaea; } h1 a { color: inherit; text-decoration: none; border-bottom: 2px dashed #8b5cf6; transition: color 0.2s; } h1 a:hover { color: #8b5cf6; } p { margin-bottom: 1.2em; font-size: 1.1em; } blockquote { border-left: 4px solid #ccc; padding-left: 1em; margin-left: 0; font-style: italic; color: #555; } .box { border: 1px solid #eaeaea; background-color: #f4f4f5; border-radius: 8px; padding: 16px; margin: 24px 0; } .box p:last-child { margin-bottom: 0; } @media (prefers-color-scheme: dark) { body { background: #121212; color: #eee; } h1 { border-color: #333; } blockquote { color: #9ca3af; border-color: #4b5563; } .box { border-color: #333; background: #1f1f1f; } }`;
         await zipWriter.add("OEBPS/Styles/style.css", new zip.TextReader(cssContent));
 
@@ -184,10 +211,7 @@
 
                 const safeTitle = escapeXml(`[${String(i + 1).padStart(2, '0')}] ${file.rawTitle}`);
                 const safeContent = file.content.replace(/<br\s*\/?>/gi, '<br/>').replace(/<hr\s*\/?>/gi, '<hr/>');
-
-                // Add link back to raw if combined
                 const h1Content = (mode === 'combined' && file.rawContent) ? `<a href="chapter_raw_${fileNum}.html" title="Jump to Raw">${safeTitle}</a>` : safeTitle;
-
                 const chapterHtml = `<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head><title>${safeTitle}</title>\n<link rel="stylesheet" href="../Styles/style.css" type="text/css"/>\n</head>\n<body>\n<h1>${h1Content}</h1>\n${safeContent}\n</body>\n</html>`;
 
                 await zipWriter.add(`OEBPS/${chapterFilename}`, new zip.TextReader(chapterHtml));
@@ -215,10 +239,7 @@
 
                     const safeTitle = escapeXml(`[${String(i + 1).padStart(2, '0')}] ${file.rawTitle} (Raw)`);
                     const safeContent = file.rawContent.replace(/<br\s*\/?>/gi, '<br/>').replace(/<hr\s*\/?>/gi, '<hr/>');
-
-                    // Add link back to trans if combined
                     const h1Content = (mode === 'combined') ? `<a href="chapter_trans_${fileNum}.html" title="Jump to Translated">${safeTitle}</a>` : safeTitle;
-
                     const chapterHtml = `<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">\n<html xmlns="http://www.w3.org/1999/xhtml">\n<head><title>${safeTitle}</title>\n<link rel="stylesheet" href="../Styles/style.css" type="text/css"/>\n</head>\n<body>\n<h1>${h1Content}</h1>\n${safeContent}\n</body>\n</html>`;
 
                     await zipWriter.add(`OEBPS/${chapterFilename}`, new zip.TextReader(chapterHtml));
@@ -249,8 +270,8 @@
         Object.assign(overlay.style, {
             position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh',
             backgroundColor: 'rgba(0, 0, 0, 0.95)', zIndex: '9999999',
-            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-            color: 'white', fontFamily: 'sans-serif', gap: '12px'
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                      color: 'white', fontFamily: 'sans-serif', gap: '12px'
         });
 
         let html = `<h1 style="margin: 0; font-size: 24px;">🎉 Extraction Complete</h1>`;
@@ -296,7 +317,7 @@
         const dateStr = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
 
         if (state.logs && state.logs.length > 0) {
-            const logContent = "--- READOMNI DEBUG LOG v23.0 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
+            const logContent = "--- READOMNI DEBUG LOG v23.4 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
             dl.log = { url: URL.createObjectURL(new Blob([logContent], { type: 'text/plain' })), name: `readomni_debug_${new Date().getTime()}.txt` };
         }
 
@@ -312,7 +333,7 @@
             const firstChap = finalFiles[0];
             const rawCheckString = (firstChap.rawTitle || "") + " " + (firstChap.rawContent || "");
             if (rawCheckString.includes("第99887章") && rawCheckString.includes("牌位")) {
-                logDebug(state, "Found ignore-flagged placeholder chapter '第99887章 “牌位”' as [01]. Removing and renumbering.");
+                logDebug(state, "Found ignore-flagged placeholder chapter '第99887章 “牌位”'. Removing and renumbering.");
                 finalFiles.shift();
             }
         }
@@ -431,8 +452,7 @@
 
             if (collectedTranslated && collectedRaw) {
                 state.retryCount = 0;
-                
-                // Re-read current state from localStorage to ensure we don't overwrite user cancellation
+
                 const freshStr = localStorage.getItem(STATE_KEY);
                 if (!freshStr) return;
                 state = JSON.parse(freshStr);
@@ -441,7 +461,7 @@
                 state.files.push({ rawTitle: rawTitleText, content: extractedHTMLBlocks, rawContent: rawHTMLBlocks });
                 logDebug(state, `Collected: ${rawTitleText} (Trans: ${extractedHTMLBlocks.length}, Raw: ${rawHTMLBlocks ? rawHTMLBlocks.length : 0})`);
             } else {
-                logDebug(state, `WARNING: Extracted HTML was empty or incomplete for ${rawTitleText}. (Trans collected: ${collectedTranslated}, Raw collected: ${collectedRaw})`);
+                logDebug(state, `WARNING: Extracted HTML empty or incomplete for ${rawTitleText}.`);
                 if (!state.retryCount) state.retryCount = 0;
                 if (state.retryCount < 1) {
                     const freshStr = localStorage.getItem(STATE_KEY);
@@ -455,14 +475,13 @@
                     window.location.reload();
                     return;
                 } else {
-                    logDebug(state, "Retry failed. Moving on to prevent infinite loop.");
+                    logDebug(state, "Retry failed. Moving on.");
                     state.retryCount = 0;
                 }
             }
 
             if (isCancelled()) return;
 
-            // Route execution based on mode
             if (state.mode === 'selective') {
                 state.queueIndex++;
                 if (state.queueIndex >= state.queue.length) {
@@ -472,12 +491,12 @@
                     return;
                 }
                 state.count++;
-                
+
                 const freshStr = localStorage.getItem(STATE_KEY);
                 if (!freshStr) return;
                 let freshState = JSON.parse(freshStr);
                 if (!freshState.active) return;
-                
+
                 freshState.queueIndex = state.queueIndex;
                 freshState.count = state.count;
                 freshState.files = state.files;
@@ -506,12 +525,12 @@
                 }
 
                 state.count++;
-                
+
                 const freshStr = localStorage.getItem(STATE_KEY);
                 if (!freshStr) return;
                 let freshState = JSON.parse(freshStr);
                 if (!freshState.active) return;
-                
+
                 freshState.count = state.count;
                 freshState.files = state.files;
                 state = freshState;
@@ -556,8 +575,8 @@
         Object.assign(overlay.style, {
             position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh',
             backgroundColor: 'rgba(0, 0, 0, 0.85)', zIndex: '9999999',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontFamily: 'sans-serif'
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontFamily: 'sans-serif'
         });
 
         overlay.innerHTML = `
@@ -589,8 +608,9 @@
             overlay.remove();
 
             if (mode === 'sequential') {
-                const firstLink = Array.from(document.querySelectorAll('a[href*="/translation/"]')).find(l => l.closest('[role="button"]'));
-                if (!firstLink) return alert("Could not find any chapters to start with!");
+                const chapterLinks = getChapterLinksFromPage();
+                const firstLink = chapterLinks[0];
+                if (!firstLink) return alert("Could not find any chapters to start with! Ensure the Translation tab is active.");
                 initSequential(firstLink.href, chosenTitle);
             } else {
                 if (window.location.pathname.includes('/thread/')) {
@@ -601,7 +621,7 @@
                         sessionStorage.setItem('ro_sel_init', chosenTitle);
                         window.location.href = threadLink.href;
                     } else {
-                        alert("Could not find Library page. Please go to the Library manually to start Selective Download.");
+                        alert("Could not find Library page. Please navigate to the Thread manually to start Selective Download.");
                     }
                 }
             }
@@ -616,79 +636,137 @@
             threadUrl: window.location.href, includeRaws: true,
             threadName: customTitle, count: 1, retryCount: 0, files: [], logs: []
         };
-        logDebug(state, `--- NEW RUN INITIALIZED (V23.0 Sequential) ---`);
+        logDebug(state, `--- NEW RUN INITIALIZED (V23.4 Sequential) ---`);
         localStorage.setItem(STATE_KEY, JSON.stringify(state));
         const runUrl = new URL(startUrl, window.location.origin);
         runUrl.searchParams.set('ro_start_download', 'true');
         window.location.href = runUrl.toString();
     }
 
-    // --- SELECTIVE SCRAPING & UI ---
+    // --- SELECTIVE SCRAPING (INFINITE SCROLL) ---
     async function initSelectiveScrape(customTitle) {
         const fallbackTitle = getBookTitle();
         const threadName = customTitle || fallbackTitle;
+
+        // Ensure Translation tab is active
+        const transTab = Array.from(document.querySelectorAll('button[role="tab"]')).find(b => b.textContent.trim().startsWith('Translation'));
+        if (transTab && transTab.getAttribute('data-state') !== 'active') {
+            fireOmniClick(transTab);
+            await sleep(400);
+        }
 
         const loading = document.createElement('div');
         Object.assign(loading.style, {
             position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh',
             backgroundColor: 'rgba(0,0,0,0.85)', zIndex: '9999999', display: 'flex',
-            flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#fff'
+                      flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#fff',
+                      fontFamily: 'sans-serif'
         });
-        loading.innerHTML = `<h2 style="margin:0 0 10px;font-size:22px;">Scraping Chapter List...</h2><p style="color:#aaa;font-size:14px;">This might take a few seconds.</p>`;
+
+        loading.innerHTML = `
+        <div style="background: var(--card, #1f2023); color: var(--foreground, #fff); padding: 26px 32px; border-radius: 12px; max-width: 440px; width: 90%; text-align: center; border: 1px solid var(--border, #333); box-shadow: 0 10px 30px rgba(0,0,0,0.6);">
+        <h2 style="margin: 0 0 8px; font-size: 20px; font-weight: bold;">Scraping Chapter List...</h2>
+        <div style="display: flex; align-items: center; justify-content: center; gap: 10px; margin: 18px 0;">
+        <svg style="animation: ro-spin 1s linear infinite;" xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12a9 9 0 1 1-6.219-8.56"></path>
+        </svg>
+        <span id="ro-scrape-count" style="font-size: 16px; font-weight: 600; color: #8b5cf6;">Scanning chapters...</span>
+        </div>
+        <p style="color: var(--muted-foreground, #aaa); font-size: 13px; margin: 0 0 20px 0; line-height: 1.5;">Automatically scrolling down to load all chapters via infinite scroll.</p>
+        <div style="display: flex; gap: 10px; justify-content: center;">
+        <button id="ro-scrape-abort" style="padding: 9px 16px; border-radius: 6px; background: transparent; color: var(--foreground, #eee); border: 1px solid var(--border, #555); cursor: pointer; font-size: 13px;">Cancel</button>
+        <button id="ro-scrape-proceed" style="padding: 9px 20px; border-radius: 6px; background: #8b5cf6; color: #fff; border: none; cursor: pointer; font-weight: bold; font-size: 13px;">Proceed with Loaded</button>
+        </div>
+        </div>
+        <style>@keyframes ro-spin { to { transform: rotate(360deg); } }</style>
+        `;
         document.body.appendChild(loading);
 
-        try {
-            // Force 100 per page to minimize clicks
-            const combo = document.querySelector('button[role="combobox"]');
-            if (combo && !combo.textContent.includes('100')) {
-                fireOmniClick(combo);
-                await sleep(300);
-                const opts = Array.from(document.querySelectorAll('[role="option"]'));
-                const opt100 = opts.find(o => o.textContent.includes('100'));
-                if (opt100) {
-                    fireOmniClick(opt100);
-                    await sleep(1500);
-                }
-            }
+        let isAborted = false;
+        let forceProceed = false;
 
-            let allLinksMap = new Map();
-
-            while (true) {
-                const links = Array.from(document.querySelectorAll('a[href*="/translation/"]')).filter(l => l.closest('[role="button"]'));
-                links.forEach(l => {
-                    const titleEl = l.querySelector('h3') || l.querySelector('span.truncate') || l;
-                    allLinksMap.set(l.href, titleEl.textContent.trim());
-                });
-
-                const nextBtn = Array.from(document.querySelectorAll('button')).find(b => {
-                    const sr = b.querySelector('span.sr-only');
-                    return sr && sr.textContent.includes('Go to next page');
-                });
-
-                if (!nextBtn || nextBtn.hasAttribute('disabled') || nextBtn.disabled) break;
-
-                const firstHref = links[0]?.href;
-                fireOmniClick(nextBtn);
-
-                let changed = false;
-                for (let i = 0; i < 30; i++) {
-                    await sleep(100);
-                    const firstLink = Array.from(document.querySelectorAll('a[href*="/translation/"]')).find(l => l.closest('[role="button"]'));
-                    const newFirst = firstLink?.href;
-                    if (newFirst && newFirst !== firstHref) { changed = true; break; }
-                }
-                if (!changed) break;
-                await sleep(200);
-            }
-
+        document.getElementById('ro-scrape-abort').onclick = () => {
+            isAborted = true;
             loading.remove();
+        };
+
+        document.getElementById('ro-scrape-proceed').onclick = () => {
+            forceProceed = true;
+        };
+
+        try {
+            let allLinksMap = new Map();
+            let lastCount = 0;
+            let stableRounds = 0;
+            const countEl = document.getElementById('ro-scrape-count');
+            const proceedBtn = document.getElementById('ro-scrape-proceed');
+
+            while (!isAborted && !forceProceed) {
+                // Collect currently visible links
+                const links = getChapterLinksFromPage();
+                links.forEach(l => {
+                    const title = extractChapterTitle(l);
+                    allLinksMap.set(l.href, title);
+                });
+
+                const currentCount = allLinksMap.size;
+                if (countEl) countEl.textContent = `Found ${currentCount} chapter${currentCount === 1 ? '' : 's'}...`;
+                if (proceedBtn) proceedBtn.textContent = `Proceed with Loaded (${currentCount})`;
+
+                if (currentCount > lastCount) {
+                    lastCount = currentCount;
+                    stableRounds = 0;
+                } else {
+                    stableRounds++;
+                }
+
+                // Check for infinite scroll loader spinner
+                const loader = document.querySelector('.lucide-loader-circle, .animate-spin');
+
+                // If no spinner is present and chapter count is stable, we have reached the bottom
+                if (!loader && stableRounds >= 3) {
+                    break;
+                }
+
+                // If count hasn't changed for 10 rounds (~5 seconds), consider finished
+                if (stableRounds >= 10) {
+                    break;
+                }
+
+                // Trigger infinite scroll loading
+                if (loader) {
+                    loader.scrollIntoView({ block: 'end', behavior: 'instant' });
+                } else {
+                    window.scrollTo({ top: document.documentElement.scrollHeight || document.body.scrollHeight, behavior: 'instant' });
+                    if (links.length > 0) {
+                        links[links.length - 1].scrollIntoView({ block: 'end', behavior: 'instant' });
+                    }
+                }
+                window.scrollBy(0, 1000);
+
+                await sleep(500);
+            }
+
+            if (isAborted) return;
+            loading.remove();
+
+            if (allLinksMap.size === 0) {
+                alert("No chapters found. Please make sure the Translation tab is active and visible.");
+                return;
+            }
 
             let rawList = Array.from(allLinksMap.entries()).map(([url, title]) => ({ url, title, selected: true }));
 
-            // Reverse to get First -> Current
-            rawList.reverse();
+            // ReadOmni displays chapters in Descending order by default.
+            // Check button state to preserve chronological order (First -> Latest)
+            const sortBtn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('Descending') || b.textContent.includes('Ascending'));
+            const isDescending = sortBtn ? sortBtn.textContent.includes('Descending') : true;
 
-            // Filter out placeholder chapter if it's the absolute first entry
+            if (isDescending) {
+                rawList.reverse();
+            }
+
+            // Filter out placeholder chapter if present
             if (rawList.length > 0 && rawList[0].title.includes("99887")) {
                 rawList.shift();
             }
@@ -706,7 +784,7 @@
         Object.assign(ui.style, {
             position: 'fixed', top: '0', left: '0', width: '100vw', height: '100vh',
             backgroundColor: 'var(--background, #fdfdfd)', color: 'var(--foreground, #111)', zIndex: '9999999',
-            display: 'flex', flexDirection: 'column', fontFamily: 'sans-serif'
+                      display: 'flex', flexDirection: 'column', fontFamily: 'sans-serif'
         });
 
         ui.innerHTML = `
@@ -740,7 +818,7 @@
 
             Object.assign(row.style, {
                 display: 'flex', alignItems: 'center', padding: '12px 24px', borderBottom: '1px solid var(--border, #eaeaea)',
-                cursor: 'pointer', userSelect: 'none', transition: 'background 0.1s'
+                          cursor: 'pointer', userSelect: 'none', transition: 'background 0.1s'
             });
 
             row.innerHTML = `
@@ -758,7 +836,6 @@
             listContainer.appendChild(row);
         });
 
-        // Add Hover & Selection styles dynamically
         const styleId = 'ro-sel-styles';
         if (!document.getElementById(styleId)) {
             const style = document.createElement('style');
@@ -769,30 +846,28 @@
             .dark .ro-list-row:hover { filter: brightness(1.2); }
             .ro-drag-handle:hover { color: var(--foreground, #111) !important; }
             #ro-sel-list {
-                scrollbar-width: auto;
-                scrollbar-color: rgba(139, 92, 246, 0.5) var(--background, #fdfdfd);
+            scrollbar-width: auto;
+            scrollbar-color: rgba(139, 92, 246, 0.5) var(--background, #fdfdfd);
             }
-            #ro-sel-list::-webkit-scrollbar {
-                width: 14px;
-            }
+            #ro-sel-list::-webkit-scrollbar { width: 14px; }
             #ro-sel-list::-webkit-scrollbar-track {
-                background: var(--background, #fdfdfd);
-                border-left: 1px solid var(--border, #eaeaea);
+            background: var(--background, #fdfdfd);
+            border-left: 1px solid var(--border, #eaeaea);
             }
             #ro-sel-list::-webkit-scrollbar-thumb {
-                background-color: rgba(139, 92, 246, 0.5);
-                border-radius: 7px;
-                border: 3px solid var(--background, #fdfdfd);
-                background-clip: padding-box;
+            background-color: rgba(139, 92, 246, 0.5);
+            border-radius: 7px;
+            border: 3px solid var(--background, #fdfdfd);
+            background-clip: padding-box;
             }
             #ro-sel-list::-webkit-scrollbar-thumb:hover {
-                background-color: rgba(139, 92, 246, 0.85);
+            background-color: rgba(139, 92, 246, 0.85);
             }
             `;
             document.head.appendChild(style);
         }
 
-        // --- Interaction Logic: Selection ---
+        // Selection Handlers
         let lastSelectedIdx = -1;
         let longPressTimer = null;
         let pressStartY = 0;
@@ -826,7 +901,6 @@
             toggleRowSelection(row, e.shiftKey);
         });
 
-        // Touch long-press emulation for multi-select
         listContainer.addEventListener('pointerdown', (e) => {
             const handle = e.target.closest('.ro-drag-handle');
             if (handle) return;
@@ -847,187 +921,182 @@
             if (longPressTimer && Math.abs(e.clientY - pressStartY) > 10) clearPress();
         });
 
-        document.getElementById('ro-sel-all').onclick = () => {
-            Array.from(listContainer.children).forEach(row => {
-                row.classList.add('selected');
-                row.querySelector('input').checked = true;
-            });
-        };
+            document.getElementById('ro-sel-all').onclick = () => {
+                Array.from(listContainer.children).forEach(row => {
+                    row.classList.add('selected');
+                    row.querySelector('input').checked = true;
+                });
+            };
 
-        document.getElementById('ro-sel-none').onclick = () => {
-            Array.from(listContainer.children).forEach(row => {
-                row.classList.remove('selected');
-                row.querySelector('input').checked = false;
-            });
-        };
+            document.getElementById('ro-sel-none').onclick = () => {
+                Array.from(listContainer.children).forEach(row => {
+                    row.classList.remove('selected');
+                    row.querySelector('input').checked = false;
+                });
+            };
 
-        // --- Interaction Logic: Drag & Drop Reordering with Auto-Scroll ---
-        let dragInfo = null;
-        let autoScrollInterval = null;
-        let lastClientY = 0;
+            // Drag & Drop Reordering with Auto-Scroll
+            let dragInfo = null;
+            let autoScrollInterval = null;
+            let lastClientY = 0;
 
-        function stopAutoScroll() {
-            if (autoScrollInterval) clearInterval(autoScrollInterval);
-            autoScrollInterval = null;
-        }
+            function stopAutoScroll() {
+                if (autoScrollInterval) clearInterval(autoScrollInterval);
+                autoScrollInterval = null;
+            }
 
-        function checkDragOverlap(clientY) {
-            if (!dragInfo) return;
-            const { row, ghost, pointerOffsetY } = dragInfo;
+            function checkDragOverlap(clientY) {
+                if (!dragInfo) return;
+                const { row, ghost, pointerOffsetY } = dragInfo;
 
-            ghost.style.top = (clientY - pointerOffsetY) + 'px';
+                ghost.style.top = (clientY - pointerOffsetY) + 'px';
 
-            const siblings = Array.from(listContainer.children).filter(c => c !== row && !c.classList.contains('ro-placeholder'));
-            const ghostCenter = clientY - pointerOffsetY + (ghost.offsetHeight / 2);
+                const siblings = Array.from(listContainer.children).filter(c => c !== row && !c.classList.contains('ro-placeholder'));
+                const ghostCenter = clientY - pointerOffsetY + (ghost.offsetHeight / 2);
 
-            let insertBeforeNode = null;
-            for (let sibling of siblings) {
-                const sRect = sibling.getBoundingClientRect();
-                const sCenter = sRect.top + sRect.height / 2;
-                if (ghostCenter < sCenter) {
-                    insertBeforeNode = sibling;
-                    break;
+                let insertBeforeNode = null;
+                for (let sibling of siblings) {
+                    const sRect = sibling.getBoundingClientRect();
+                    const sCenter = sRect.top + sRect.height / 2;
+                    if (ghostCenter < sCenter) {
+                        insertBeforeNode = sibling;
+                        break;
+                    }
+                }
+
+                if (row.nextElementSibling !== insertBeforeNode) {
+                    const rects = new Map();
+                    siblings.forEach(s => rects.set(s, s.getBoundingClientRect().top));
+
+                    listContainer.insertBefore(row, insertBeforeNode);
+
+                    siblings.forEach(s => {
+                        const oldTop = rects.get(s);
+                        const newTop = s.getBoundingClientRect().top;
+                        const dY = oldTop - newTop;
+                        if (dY !== 0) {
+                            s.style.transform = `translateY(${dY}px)`;
+                            s.style.transition = 'none';
+                            requestAnimationFrame(() => {
+                                s.style.transform = '';
+                                s.style.transition = 'transform 0.25s cubic-bezier(0.2, 0, 1)';
+                            });
+                        }
+                    });
                 }
             }
 
-            if (row.nextElementSibling !== insertBeforeNode) {
-                const rects = new Map();
-                siblings.forEach(s => rects.set(s, s.getBoundingClientRect().top));
+            listContainer.addEventListener('pointerdown', (e) => {
+                const handle = e.target.closest('.ro-drag-handle');
+                if (!handle) return;
 
-                listContainer.insertBefore(row, insertBeforeNode);
+                const row = e.target.closest('.ro-list-row');
+                if (!row) return;
 
-                siblings.forEach(s => {
-                    const oldTop = rects.get(s);
-                    const newTop = s.getBoundingClientRect().top;
-                    const dY = oldTop - newTop;
-                    if (dY !== 0) {
-                        s.style.transform = `translateY(${dY}px)`;
-                        s.style.transition = 'none';
-                        requestAnimationFrame(() => {
-                            s.style.transform = '';
-                            s.style.transition = 'transform 0.25s cubic-bezier(0.2, 0, 0, 1)';
-                        });
+                e.preventDefault();
+                e.stopPropagation();
+
+                try { handle.setPointerCapture(e.pointerId); } catch (err) { }
+
+                const rect = row.getBoundingClientRect();
+
+                const ghost = row.cloneNode(true);
+                ghost.style.position = 'fixed';
+                ghost.style.top = rect.top + 'px';
+                ghost.style.left = rect.left + 'px';
+                ghost.style.width = rect.width + 'px';
+                ghost.style.height = rect.height + 'px';
+                ghost.style.zIndex = '9999999';
+                ghost.style.opacity = '0.95';
+                ghost.style.boxShadow = '0 10px 25px rgba(0,0,0,0.3)';
+                ghost.style.transition = 'none';
+                ghost.style.pointerEvents = 'none';
+                document.body.appendChild(ghost);
+
+                row.style.opacity = '0.3';
+                row.style.background = 'var(--muted, #eee)';
+                row.classList.add('ro-placeholder');
+
+                dragInfo = { row, ghost, handle, pointerOffsetY: e.clientY - rect.top };
+            });
+
+            window.addEventListener('pointermove', (e) => {
+                if (!dragInfo) return;
+                lastClientY = e.clientY;
+                checkDragOverlap(lastClientY);
+
+                const listRect = listContainer.getBoundingClientRect();
+                const threshold = 60;
+                let scrollDir = 0;
+
+                if (lastClientY < listRect.top + threshold) {
+                    scrollDir = -1;
+                } else if (lastClientY > listRect.bottom - threshold) {
+                    scrollDir = 1;
+                }
+
+                if (scrollDir !== 0 && !autoScrollInterval) {
+                    autoScrollInterval = setInterval(() => {
+                        listContainer.scrollTop += scrollDir * 12;
+                        checkDragOverlap(lastClientY);
+                    }, 16);
+                } else if (scrollDir === 0 && autoScrollInterval) {
+                    stopAutoScroll();
+                }
+            });
+
+            window.addEventListener('pointerup', (e) => {
+                if (!dragInfo) return;
+                const { row, ghost, handle } = dragInfo;
+
+                stopAutoScroll();
+                try { handle.releasePointerCapture(e.pointerId); } catch (err) { }
+
+                const finalRect = row.getBoundingClientRect();
+                ghost.style.transition = 'top 0.2s cubic-bezier(0.2, 0, 1), left 0.2s cubic-bezier(0.2, 0, 1)';
+                ghost.style.top = finalRect.top + 'px';
+                ghost.style.left = finalRect.left + 'px';
+
+                dragInfo = null;
+
+                setTimeout(() => {
+                    if (ghost && ghost.parentNode) ghost.remove();
+                    row.style.opacity = '';
+                    row.style.background = '';
+                    row.classList.remove('ro-placeholder');
+                }, 200);
+            });
+
+            document.getElementById('ro-sel-cancel').onclick = () => ui.remove();
+
+            document.getElementById('ro-sel-start').onclick = () => {
+                const finalQueue = [];
+                Array.from(listContainer.children).forEach(row => {
+                    if (row.classList.contains('selected') && !row.classList.contains('ro-placeholder')) {
+                        finalQueue.push({ url: row.dataset.url, title: row.dataset.title });
                     }
                 });
-            }
-        }
 
-        listContainer.addEventListener('pointerdown', (e) => {
-            const handle = e.target.closest('.ro-drag-handle');
-            if (!handle) return;
+                if (finalQueue.length === 0) return alert("No chapters selected!");
 
-            const row = e.target.closest('.ro-list-row');
-            if (!row) return;
+                const chosenTitle = document.getElementById('ro-sel-title').value.trim() || 'ReadOmni_Book';
+                ui.remove();
 
-            e.preventDefault();
-            e.stopPropagation();
+                const runId = Date.now().toString();
+                sessionStorage.setItem(LOCK_KEY, runId);
+                const state = {
+                    mode: 'selective', active: true, runId: runId,
+ threadUrl: threadUrl, includeRaws: true,
+ threadName: chosenTitle, count: 1, retryCount: 0, files: [], logs: [],
+ queue: finalQueue, queueIndex: 0
+                };
+                logDebug(state, `--- NEW RUN INITIALIZED (V23.4 Selective) Total: ${finalQueue.length} ---`);
+                localStorage.setItem(STATE_KEY, JSON.stringify(state));
 
-            try { handle.setPointerCapture(e.pointerId); } catch (err) { }
-
-            const rect = row.getBoundingClientRect();
-
-            const ghost = row.cloneNode(true);
-            ghost.style.position = 'fixed';
-            ghost.style.top = rect.top + 'px';
-            ghost.style.left = rect.left + 'px';
-            ghost.style.width = rect.width + 'px';
-            ghost.style.height = rect.height + 'px';
-            ghost.style.zIndex = '9999999';
-            ghost.style.opacity = '0.95';
-            ghost.style.boxShadow = '0 10px 25px rgba(0,0,0,0.3)';
-            ghost.style.transition = 'none';
-            ghost.style.pointerEvents = 'none';
-            document.body.appendChild(ghost);
-
-            row.style.opacity = '0.3';
-            row.style.background = 'var(--muted, #eee)';
-            row.classList.add('ro-placeholder');
-
-            dragInfo = {
-                row, ghost, handle,
-                pointerOffsetY: e.clientY - rect.top
+                const runUrl = new URL(finalQueue[0].url, window.location.origin);
+                runUrl.searchParams.set('ro_start_download', 'true');
+                window.location.href = runUrl.toString();
             };
-        });
-
-        window.addEventListener('pointermove', (e) => {
-            if (!dragInfo) return;
-            lastClientY = e.clientY;
-            checkDragOverlap(lastClientY);
-
-            // Auto-scroll logic
-            const listRect = listContainer.getBoundingClientRect();
-            const threshold = 60; // Distance from edge to trigger scroll
-            let scrollDir = 0;
-
-            if (lastClientY < listRect.top + threshold) {
-                scrollDir = -1;
-            } else if (lastClientY > listRect.bottom - threshold) {
-                scrollDir = 1;
-            }
-
-            if (scrollDir !== 0 && !autoScrollInterval) {
-                autoScrollInterval = setInterval(() => {
-                    listContainer.scrollTop += scrollDir * 12;
-                    checkDragOverlap(lastClientY);
-                }, 16);
-            } else if (scrollDir === 0 && autoScrollInterval) {
-                stopAutoScroll();
-            }
-        });
-
-        window.addEventListener('pointerup', (e) => {
-            if (!dragInfo) return;
-            const { row, ghost, handle } = dragInfo;
-
-            stopAutoScroll();
-            try { handle.releasePointerCapture(e.pointerId); } catch (err) { }
-
-            const finalRect = row.getBoundingClientRect();
-            ghost.style.transition = 'top 0.2s cubic-bezier(0.2, 0, 0, 1), left 0.2s cubic-bezier(0.2, 0, 0, 1)';
-            ghost.style.top = finalRect.top + 'px';
-            ghost.style.left = finalRect.left + 'px';
-
-            dragInfo = null;
-
-            setTimeout(() => {
-                if (ghost && ghost.parentNode) ghost.remove();
-                row.style.opacity = '';
-                row.style.background = '';
-                row.classList.remove('ro-placeholder');
-            }, 200);
-        });
-
-        // --- Execute Actions ---
-        document.getElementById('ro-sel-cancel').onclick = () => ui.remove();
-
-        document.getElementById('ro-sel-start').onclick = () => {
-            const finalQueue = [];
-            Array.from(listContainer.children).forEach(row => {
-                if (row.classList.contains('selected') && !row.classList.contains('ro-placeholder')) {
-                    finalQueue.push({ url: row.dataset.url, title: row.dataset.title });
-                }
-            });
-
-            if (finalQueue.length === 0) return alert("No chapters selected!");
-
-            const chosenTitle = document.getElementById('ro-sel-title').value.trim() || 'ReadOmni_Book';
-            ui.remove();
-
-            const runId = Date.now().toString();
-            sessionStorage.setItem(LOCK_KEY, runId);
-            const state = {
-                mode: 'selective', active: true, runId: runId,
-                threadUrl: threadUrl, includeRaws: true,
-                threadName: chosenTitle, count: 1, retryCount: 0, files: [], logs: [],
-                queue: finalQueue, queueIndex: 0
-            };
-            logDebug(state, `--- NEW RUN INITIALIZED (V23.0 Selective) Total: ${finalQueue.length} ---`);
-            localStorage.setItem(STATE_KEY, JSON.stringify(state));
-
-            const runUrl = new URL(finalQueue[0].url, window.location.origin);
-            runUrl.searchParams.set('ro_start_download', 'true');
-            window.location.href = runUrl.toString();
-        };
     }
 
     async function cancelDownload() {
@@ -1036,11 +1105,9 @@
             const state = JSON.parse(stateStr);
             logDebug(state, "User clicked Cancel. Triggering early extraction.");
             state.active = false;
-            // Mark state as inactive and remove lock IMMEDIATELY so processQueue halts instantly
             localStorage.setItem(STATE_KEY, JSON.stringify(state));
             sessionStorage.removeItem(LOCK_KEY);
 
-            // Remove cancel button so user can't double-click it
             const btn = document.getElementById('ro-cancel-btn');
             if (btn) btn.remove();
 
@@ -1052,7 +1119,6 @@
         sessionStorage.removeItem(LOCK_KEY);
     }
 
-    // --- UI INJECTION ---
     function updateCancelButtonText(text) {
         const btn = document.getElementById('ro-cancel-btn');
         if (btn) btn.innerHTML = `🛑 ${text}`;
@@ -1068,9 +1134,9 @@
         btn.innerHTML = `🛑 Cancel Auto-Download (Attempting: ${count})`;
         Object.assign(btn.style, {
             position: 'fixed', top: '20px', left: '50%', transform: 'translateX(-50%)',
-            zIndex: '999999', padding: '10px 20px', backgroundColor: '#ef4444',
-            color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer',
-            fontWeight: 'bold', boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+                      zIndex: '999999', padding: '10px 20px', backgroundColor: '#ef4444',
+                      color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer',
+                      fontWeight: 'bold', boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
         });
         btn.onclick = cancelDownload;
         document.body.appendChild(btn);
