@@ -5,7 +5,7 @@
 // @description  Downloads multi-part chapters from bqquge.com and sudugu.org safely.
 // @author       tiklii
 // @match        *://www.bqquge.com/*/*
-// @match        *://www.sudugu.org/*/*
+// @match        *://www.shudugu.org/*/*
 // @grant        none
 // ==/UserScript==
 
