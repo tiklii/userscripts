@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         ReadOmni Sequential ZIP & EPUB Downloader
-// @namespace    http://tampermonkey.net/
+// @namespace    https://github.com/tiklii/userscripts
 // @version      23.3
 // @description  Permanent Bottom Nav, Faster Watchdog, Pro UI, Box Styles, and Animated Drag & Drop Selective Downloader.
-// @author       You
+// @author       tiklii
 // @match        https://app.readomni.com/*
 // @require      https://cdn.jsdelivr.net/npm/@zip.js/zip.js@2.8.26/dist/zip.min.js
 // @grant        none

@@ -1,8 +1,9 @@
 // ==UserScript==
 // @name         Google Translate Mobile: Sticky Native Clear Button
-// @namespace    http://violentmonkey.net/
+// @namespace    https://github.com/tiklii/userscripts
 // @version      2.0
 // @description  Hijacks the native "x" button and forces it to follow you as you scroll.
+// @author       tiklii
 // @match        *://translate.google.com/*
 // @run-at       document-start
 // @grant        GM_addStyle

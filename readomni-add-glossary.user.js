@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         ReadOmni Quick Glossary Importer
-// @namespace    http://tampermonkey.net/
+// @namespace    https://github.com/tiklii/userscripts
 // @version      1.0
 // @description  Adds a 1-click "Import CSV" button to the ReadOmni Glossary tab to bulk-add terms.
-// @author       You
+// @author       tiklii
 // @match        https://app.readomni.com/*
 // @grant        none
 // ==/UserScript==

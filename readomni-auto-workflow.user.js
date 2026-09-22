@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         ReadOmni Auto-Workflow
-// @namespace    http://tampermonkey.net/
+// @namespace    https://github.com/tiklii/userscripts
 // @version      1.18
 // @description  Automates the ReadOmni thread creation, glossary, and renaming workflow.
-// @author       You
+// @author       tiklii
 // @match        https://app.readomni.com/*
 // @grant        none
 // ==/UserScript==

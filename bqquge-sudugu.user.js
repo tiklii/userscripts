@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Universal Single Chapter Downloader (Bqquge & Sudugu)
-// @namespace    http://tampermonkey.net/
+// @namespace    https://github.com/tiklii/userscripts
 // @version      1.4
 // @description  Downloads multi-part chapters from bqquge.com and sudugu.org safely.
-// @author       You
+// @author       tiklii
 // @match        *://www.bqquge.com/*/*
 // @match        *://www.sudugu.org/*/*
 // @grant        none

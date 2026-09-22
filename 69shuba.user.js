@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         69shuba Chapter Downloader
-// @namespace    http://tampermonkey.net/
+// @namespace    https://github.com/tiklii/userscripts
 // @version      1.1
 // @description  Adds a button to download chapters as a txt file from 69shuba
-// @author       You
+// @author       tiklii
 // @match        *://*.69shuba.com/txt/*/*
 // @match        *://*.69shuba.pro/txt/*/*
 // @match        *://*.69shuba.cx/txt/*/*
