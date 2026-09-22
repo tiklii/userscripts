@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         69shuba Chapter Downloader
+// @name         Single Chapter Downloader 69shuba
 // @namespace    https://github.com/tiklii/userscripts
-// @version      1.1
+// @version      1.2
 // @description  Adds a button to download chapters as a txt file from 69shuba
 // @author       tiklii
 // @match        *://*.69shuba.com/txt/*/*
