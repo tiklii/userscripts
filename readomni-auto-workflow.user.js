@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ReadOmni Auto-Workflow
 // @namespace    https://github.com/tiklii/userscripts
-// @version      1.18
+// @version      1.19
 // @description  Automates the ReadOmni thread creation, glossary, and renaming workflow.
 // @author       tiklii
 // @match        https://app.readomni.com/*
@@ -161,7 +161,7 @@
                 let threadNameSpan;
 
                 try {
-                    const timeout = reloaded === 'true' ? 30000 : 10000;
+                    const timeout = reloaded === 'true' ? 30000 : 18000;
                     threadNameSpan = await waitForElement('span.truncate.font-medium', null, false, timeout);
                     sessionStorage.removeItem(RELOAD_KEY);
                 } catch (e) {
