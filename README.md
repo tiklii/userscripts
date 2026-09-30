@@ -6,4 +6,5 @@ https://raw.githubusercontent.com/tiklii/userscripts/master/googletl-x-button.us
 https://raw.githubusercontent.com/tiklii/userscripts/master/readomni-add-glossary.user.js
 https://raw.githubusercontent.com/tiklii/userscripts/master/readomni-auto-workflow.user.js
 https://raw.githubusercontent.com/tiklii/userscripts/master/readomni-multidownload.user.js
+https://raw.githubusercontent.com/tiklii/userscripts/master/twkan.user.js
 ```
