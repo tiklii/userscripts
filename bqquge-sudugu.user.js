@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Single Chapter Downloader (bqquge & shudugu)
 // @namespace    https://github.com/tiklii/userscripts
-// @version      1.6
+// @version      1.7
 // @description  Downloads multi-part chapters from bqquge.com and sudugu.org correctly.
 // @author       tiklii
 // @match        *://www.bqquge.org/*/*
