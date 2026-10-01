@@ -1,8 +1,9 @@
 // ==UserScript==
 // @name         TWKan Single Chapter Downloader
-// @namespace    https://twkan.com/
-// @version      1.2
+// @namespace    https://github.com/tiklii/userscripts
+// @version      1.3
 // @description  Download the current TWKan chapter as a TXT file
+// @author       tiklii
 // @match        https://twkan.com/txt/*/*
 // @grant        none
 // ==/UserScript==
