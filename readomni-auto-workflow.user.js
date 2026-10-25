@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ReadOmni Auto-Workflow
 // @namespace    https://github.com/tiklii/userscripts
-// @version      1.19
-// @description  Automates the ReadOmni thread creation, glossary, and renaming workflow.
+// @version      2.0
+// @description  Automates ReadOmni empty thread creation, multi-file glossary importing, and renaming with guardrails, HUD, and live cancellation.
 // @author       tiklii
 // @match        https://app.readomni.com/*
 // @grant        none
@@ -11,24 +11,46 @@
 (function() {
     'use strict';
 
-    const SAMPLE_TEXT = `第99887章 “牌位”\n\n诸葛真人看到了荀老先生那熟悉的，严格的字迹，头皮都是麻的。\n\n他有一种毕业多年了，突然做了个梦，回到了弟子时代，被“教习”耳提面命的紧张和局促感。`;
-
-    // State Keys for SessionStorage (Allows recovery after a hard refresh)
+    // State Keys for SessionStorage
     const STATE_KEY = 'ro_wf_state';
-    const CSV_KEY = 'ro_wf_csv';
+    const CSV_LIST_KEY = 'ro_wf_csv_list';
     const NAME_KEY = 'ro_wf_name';
-    const RELOAD_KEY = 'ro_wf_reloaded';
-    const MODE_KEY = 'ro_wf_mode';
+    const TARGET_THREAD_ID_KEY = 'ro_wf_target_thread_id';
+    const TIMESTAMP_KEY = 'ro_wf_timestamp';
+    const MAX_WORKFLOW_AGE_MS = 5 * 60 * 1000; // 5 minute expiration
+
+    let isRunning = false;
+    let isAborted = false;
 
     // --- HELPER FUNCTIONS ---
 
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    function checkAbort() {
+        if (isAborted || !sessionStorage.getItem(STATE_KEY)) {
+            throw new Error("WORKFLOW_CANCELLED");
+        }
+    }
+
+    async function sleepWithAbort(ms) {
+        const step = 100;
+        let elapsed = 0;
+        while (elapsed < ms) {
+            checkAbort();
+            await sleep(Math.min(step, ms - elapsed));
+            elapsed += step;
+        }
+        checkAbort();
+    }
 
     // Waits for an element to appear in the DOM
     async function waitForElement(selector, textFilter = null, exactText = false, timeout = 30000) {
         return new Promise((resolve, reject) => {
             const endTime = Date.now() + timeout;
             const check = () => {
+                if (isAborted || !sessionStorage.getItem(STATE_KEY)) {
+                    return reject(new Error("WORKFLOW_CANCELLED"));
+                }
                 let elements = Array.from(document.querySelectorAll(selector));
                 if (textFilter) {
                     elements = elements.filter(el => {
@@ -41,11 +63,37 @@
                 } else if (Date.now() > endTime) {
                     reject(new Error(`Timeout waiting for ${selector} ${textFilter ? '(' + textFilter + ')' : ''}`));
                 } else {
-                    setTimeout(check, 300);
+                    setTimeout(check, 200);
                 }
             };
             check();
         });
+    }
+
+    // Waits for an element to be unmounted / closed
+    async function waitForElementToDisappear(selector, timeout = 15000) {
+        const endTime = Date.now() + timeout;
+        while (document.querySelector(selector)) {
+            checkAbort();
+            if (Date.now() > endTime) {
+                console.warn(`Timeout waiting for ${selector} to disappear.`);
+                break;
+            }
+            await sleep(250);
+        }
+    }
+
+    // Searches strictly for a Base UI menuitem by visible text
+    async function findMenuItem(textFilter, timeout = 8000) {
+        const endTime = Date.now() + timeout;
+        while (Date.now() < endTime) {
+            checkAbort();
+            const items = Array.from(document.querySelectorAll('[role="menuitem"]'));
+            const target = items.find(el => el.textContent.trim().includes(textFilter));
+            if (target) return target;
+            await sleep(200);
+        }
+        throw new Error(`Menu item containing "${textFilter}" not found`);
     }
 
     // Forces React to register value changes in inputs/textareas
@@ -65,80 +113,203 @@
         element.dispatchEvent(event);
     }
 
-    // Forces stubborn React/Radix UI components (like dropdowns/tabs/ellipsis) to trigger
+    // Single-event activation supporting Base UI, Radix, and React synthetic events
     function reactClick(element) {
         if (!element) return;
-        ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(type => {
-            element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0 }));
-        });
+        element.focus();
+
+        const mouseOpts = { bubbles: true, cancelable: true, view: window, button: 0 };
+        try {
+            element.dispatchEvent(new PointerEvent('pointerdown', { ...mouseOpts, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+            element.dispatchEvent(new MouseEvent('mousedown', mouseOpts));
+            element.dispatchEvent(new PointerEvent('pointerup', { ...mouseOpts, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+            element.dispatchEvent(new MouseEvent('mouseup', mouseOpts));
+        } catch (e) {
+            element.dispatchEvent(new MouseEvent('mousedown', mouseOpts));
+            element.dispatchEvent(new MouseEvent('mouseup', mouseOpts));
+        }
+
+        // Single click only: .click() fires native action and trusted synthetic click
+        if (typeof element.click === 'function') {
+            element.click();
+        } else {
+            element.dispatchEvent(new MouseEvent('click', mouseOpts));
+        }
+
+        // Keyboard trigger for Base UI menuitems
+        if (element.getAttribute('role') === 'menuitem') {
+            element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+            element.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+        }
     }
 
-    async function processCsvFiles(files) {
-        let finalCsv = "";
+    async function parseCsvFiles(files) {
+        const csvList = [];
+        const isHeader = (line) => /^raw,translation|^term,translation/i.test(line);
+
         for (let i = 0; i < files.length; i++) {
-            const text = await files[i].text();
+            let text = await files[i].text();
+            // Remove UTF-8 BOM if present
+            text = text.replace(/^\uFEFF/, '');
             let lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
-            if (i > 0 && lines[0].startsWith("raw,translation")) {
+            if (lines.length > 0 && isHeader(lines[0])) {
                 lines.shift();
             }
-            finalCsv += lines.join('\n') + '\n';
+            if (lines.length > 0) {
+                csvList.push(lines.join('\n'));
+            }
         }
-        return finalCsv;
+        return csvList;
     }
 
     function getNextThreadName(filename) {
-        // Strip out the .csv extension
         let namePart = filename.replace(/\.csv$/i, '');
-        // Strip out OS added duplicate numbers like " (1)", " (2)" at the end
         namePart = namePart.replace(/\s*\(\d+\)$/, '');
-        // Strip out 'glossary-' and an optional '1of2-' part
         namePart = namePart.replace(/^glossary-(?:\d+of\d+-)?/i, '');
 
-        // Extract text and trailing numbers
         const match = namePart.match(/(.*?)(\d+)$/);
         if (match) {
             let textPart = match[1];
             let numberPart = parseInt(match[2], 10);
             return textPart + (numberPart + 1);
         } else {
-            return namePart + "1"; // e.g., qingshan -> qingshan1
+            return namePart + "1";
         }
     }
 
     function clearWorkflowState() {
         sessionStorage.removeItem(STATE_KEY);
-        sessionStorage.removeItem(CSV_KEY);
+        sessionStorage.removeItem(CSV_LIST_KEY);
         sessionStorage.removeItem(NAME_KEY);
-        sessionStorage.removeItem(RELOAD_KEY);
-        sessionStorage.removeItem(MODE_KEY);
+        sessionStorage.removeItem(TARGET_THREAD_ID_KEY);
+        sessionStorage.removeItem(TIMESTAMP_KEY);
+        removeStatusBanner();
+    }
+
+    function isStateExpired() {
+        const timestamp = parseInt(sessionStorage.getItem(TIMESTAMP_KEY) || '0', 10);
+        return !timestamp || (Date.now() - timestamp > MAX_WORKFLOW_AGE_MS);
+    }
+
+    // --- UI STATUS INDICATOR & LIVE CONTROLS ---
+
+    function updateStatusBanner(text) {
+        let banner = document.getElementById('ro-workflow-status-banner');
+        if (!text) {
+            if (banner) banner.remove();
+            return;
+        }
+
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.id = 'ro-workflow-status-banner';
+            Object.assign(banner.style, {
+                position: 'fixed',
+                top: '16px',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                          zIndex: '9999999',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px',
+                          padding: '8px 16px',
+                          backgroundColor: 'rgba(24, 24, 27, 0.95)',
+                          color: '#fafafa',
+                          borderRadius: '9999px',
+                          boxShadow: '0 10px 25px -5px rgba(0,0,0,0.4), 0 8px 10px -6px rgba(0,0,0,0.3)',
+                          fontSize: '13px',
+                          fontWeight: '500',
+                          border: '1px solid rgba(255, 255, 255, 0.15)',
+                          backdropFilter: 'blur(8px)',
+                          userSelect: 'none'
+            });
+
+            // Modern CSS spinner ring
+            const spinner = document.createElement('span');
+            spinner.id = 'ro-status-spinner';
+            Object.assign(spinner.style, {
+                width: '14px',
+                height: '14px',
+                border: '2px solid rgba(255, 255, 255, 0.25)',
+                          borderTopColor: '#ffffff',
+                          borderRadius: '50%',
+                          display: 'inline-block',
+                          animation: 'ro-spin 0.8s linear infinite'
+            });
+
+            if (!document.getElementById('ro-spinner-style')) {
+                const style = document.createElement('style');
+                style.id = 'ro-spinner-style';
+                style.textContent = '@keyframes ro-spin { to { transform: rotate(360deg); } }';
+                document.head.appendChild(style);
+            }
+
+            banner.appendChild(spinner);
+
+            const msgSpan = document.createElement('span');
+            msgSpan.id = 'ro-status-msg';
+            banner.appendChild(msgSpan);
+
+            const cancelBtn = document.createElement('button');
+            cancelBtn.type = 'button';
+            cancelBtn.innerText = 'Cancel';
+            Object.assign(cancelBtn.style, {
+                backgroundColor: '#dc2626',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: '9999px',
+                padding: '3px 10px',
+                fontSize: '11px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                marginLeft: '4px'
+            });
+
+            cancelBtn.onclick = () => {
+                console.warn("[ReadOmni-Workflow] Terminated by user.");
+                isAborted = true;
+                clearWorkflowState();
+                removeStatusBanner();
+            };
+
+            banner.appendChild(cancelBtn);
+            document.body.appendChild(banner);
+        }
+
+        const msgSpan = banner.querySelector('#ro-status-msg');
+        if (msgSpan) msgSpan.textContent = text;
+    }
+
+    function removeStatusBanner() {
+        const banner = document.getElementById('ro-workflow-status-banner');
+        if (banner) banner.remove();
     }
 
     // --- MAIN WORKFLOW ---
 
     async function startWorkflow(files) {
         try {
-            console.log("[ReadOmni-Workflow] Starting workflow...");
+            console.log("[ReadOmni-Workflow] Starting workflow with", files.length, "file(s)...");
 
             const nextName = getNextThreadName(files[0].name);
-            const combinedCsv = await processCsvFiles(files);
+            const csvList = await parseCsvFiles(files);
 
             console.log(`[ReadOmni-Workflow] Target thread name: "${nextName}"`);
 
-            sessionStorage.setItem(CSV_KEY, combinedCsv);
+            isAborted = false;
+            sessionStorage.setItem(CSV_LIST_KEY, JSON.stringify(csvList));
             sessionStorage.setItem(NAME_KEY, nextName);
+            sessionStorage.setItem(TIMESTAMP_KEY, Date.now().toString());
+            sessionStorage.setItem(STATE_KEY, 'STEP_CREATE_THREAD');
 
-            // 1. Paste text and submit
-            console.log("[ReadOmni-Workflow] Submitting sample text...");
-            const mainTextarea = await waitForElement('textarea');
-            setReactInputValue(mainTextarea, SAMPLE_TEXT);
+            updateStatusBanner(`Creating empty thread for "${nextName}"...`);
 
-            const submitBtn = await waitForElement('button[type="submit"]');
-            reactClick(submitBtn);
-
-            // Set state and trigger workflow state machine
-            sessionStorage.setItem(STATE_KEY, 'STEP_1');
-            doWorkflow();
+            if (window.location.pathname !== '/library') {
+                window.location.href = '/library';
+            } else {
+                doWorkflow();
+            }
 
         } catch (error) {
             console.error("[ReadOmni-Workflow] Error during startup:", error);
@@ -148,212 +319,211 @@
     }
 
     async function doWorkflow() {
+        if (isRunning) return;
+
         let state = sessionStorage.getItem(STATE_KEY);
         if (!state) return;
 
-        const combinedCsv = sessionStorage.getItem(CSV_KEY);
-        const nextName = sessionStorage.getItem(NAME_KEY);
+        // Auto-expire runs older than 5 minutes
+        if (isStateExpired()) {
+            console.warn("[ReadOmni-Workflow] Stale workflow state detected. Purging state.");
+            clearWorkflowState();
+            return;
+        }
+
+        isRunning = true;
 
         try {
-            if (state === 'STEP_1') {
-                console.log("[ReadOmni-Workflow] [STEP 1] Waiting for translation view to load...");
-                let reloaded = sessionStorage.getItem(RELOAD_KEY);
-                let threadNameSpan;
+            const csvListRaw = sessionStorage.getItem(CSV_LIST_KEY);
+            const csvList = csvListRaw ? JSON.parse(csvListRaw) : [];
+            const nextName = sessionStorage.getItem(NAME_KEY);
+            const lockedThreadId = sessionStorage.getItem(TARGET_THREAD_ID_KEY);
 
-                try {
-                    const timeout = reloaded === 'true' ? 30000 : 18000;
-                    threadNameSpan = await waitForElement('span.truncate.font-medium', null, false, timeout);
-                    sessionStorage.removeItem(RELOAD_KEY);
-                } catch (e) {
-                    if (reloaded !== 'true') {
-                        console.log("[ReadOmni-Workflow] Page stuck loading. Performing hard refresh...");
-                        sessionStorage.setItem(RELOAD_KEY, 'true');
-                        location.reload(true);
-                        return;
-                    } else {
-                        throw new Error("Timeout waiting for thread page to load even after reload.");
-                    }
-                }
-
-                // 2. Settings Gear
-                console.log("[ReadOmni-Workflow] [STEP 1] Opening settings modal...");
-                const settingsBtn = await waitForElement('svg.lucide-sliders-horizontal');
-                reactClick(settingsBtn.closest('button') || settingsBtn.parentElement);
-                await sleep(300);
-
-                // 3. Appearance -> Font Logic
-                console.log("[ReadOmni-Workflow] [STEP 1] Checking font size in Appearance...");
-                const appearanceBtn = await waitForElement('button', 'Appearance');
-                reactClick(appearanceBtn);
-                await sleep(300);
-
-                const fontInput = await waitForElement('input[inputmode="numeric"]');
-                const currentFontSize = parseInt(fontInput.value, 10);
-
-                if (!isNaN(currentFontSize) && currentFontSize < 18) {
-                    console.log(`[ReadOmni-Workflow] [STEP 1] Current font size is ${currentFontSize}. Adjusting to 18...`);
-                    const plusIcon = await waitForElement('svg.lucide-plus');
-                    const plusBtn = plusIcon.closest('button');
-                    const clicksNeeded = 18 - currentFontSize;
-
-                    for (let i = 0; i < clicksNeeded; i++) {
-                        reactClick(plusBtn);
-                        await sleep(100);
-                    }
-                    await sleep(300);
-                } else {
-                    console.log(`[ReadOmni-Workflow] [STEP 1] Font size is already ${currentFontSize}. No changes needed.`);
-                }
-
-                // Close settings modal
-                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-                await sleep(300);
-
-                // 4. Click thread name to navigate to the Thread page
-                console.log("[ReadOmni-Workflow] [STEP 1] Navigating to thread page...");
-                threadNameSpan = await waitForElement('span.truncate.font-medium');
-                reactClick(threadNameSpan);
-
-                sessionStorage.setItem(STATE_KEY, 'STEP_2');
-                state = 'STEP_2';
-                await sleep(1500);
-            }
-
-            if (state === 'STEP_2') {
-                console.log("[ReadOmni-Workflow] [STEP 2] Waiting for Thread page to load...");
-                // Wait for the Thread page H1 to appear
-                await waitForElement('h1');
-
-                let isTabMode = false;
-                let glossaryTab = null;
-
-                try {
-                    // Check for the new Glossary tab on the thread page
-                    glossaryTab = await waitForElement('button[role="tab"], button', 'Glossary', true, 4000);
-                    isTabMode = true;
-                } catch (e) {
-                    console.log("[ReadOmni-Workflow] [STEP 2] Glossary tab not found, falling back to context link check...");
-                }
-
-                if (isTabMode && glossaryTab) {
-                    console.log("[ReadOmni-Workflow] [STEP 2] Clicking new 'Glossary' tab...");
-                    reactClick(glossaryTab);
-                    sessionStorage.setItem(MODE_KEY, 'tab');
-                } else {
-                    console.log("[ReadOmni-Workflow] [STEP 2] Clicking legacy context link...");
-                    const contextLink = await waitForElement('a[href*="/context?thread="]');
-                    reactClick(contextLink);
-                    sessionStorage.setItem(MODE_KEY, 'link');
-                }
-
-                sessionStorage.setItem(STATE_KEY, 'STEP_3');
-                state = 'STEP_3';
-                await sleep(1500);
-            }
-
-            if (state === 'STEP_3') {
-                console.log("[ReadOmni-Workflow] [STEP 3] Opening Bulk Terms input...");
-                const wfMode = sessionStorage.getItem(MODE_KEY) || 'tab';
-
-                // 6. Click Add -> Bulk
-                const addBtn = await waitForElement('button', 'Add', true);
-                reactClick(addBtn);
-                await sleep(500);
-
-                const bulkTab = await waitForElement('button, [role="tab"]', 'Bulk');
-                reactClick(bulkTab);
-                await sleep(500);
-
-                // 7. Paste CSV and submit
-                console.log("[ReadOmni-Workflow] [STEP 3] Pasting combined glossary terms...");
-                const bulkTextarea = await waitForElement('textarea[name="input"]');
-                setReactInputValue(bulkTextarea, combinedCsv);
-
-                const addTermsBtn = await waitForElement('button[type="submit"]', 'Add Terms');
-                reactClick(addTermsBtn);
-
-                console.log("[ReadOmni-Workflow] [STEP 3] Terms submitted, waiting for save...");
-                await sleep(2000);
-
-                // If on legacy link mode (/context), go back. In tab mode, we are ALREADY on the thread page!
-                if (wfMode === 'link' || window.location.pathname.includes('/context')) {
-                    console.log("[ReadOmni-Workflow] [STEP 3] Navigating back from /context page...");
-                    window.history.back();
-                    await sleep(1500);
-                } else {
-                    console.log("[ReadOmni-Workflow] [STEP 3] Tab mode: already on thread page, continuing directly.");
-                }
-
-                sessionStorage.setItem(STATE_KEY, 'STEP_4');
-                state = 'STEP_4';
-            }
-
-            if (state === 'STEP_4') {
-                console.log(`[ReadOmni-Workflow] [STEP 4] Renaming Thread to: "${nextName}"...`);
-
-                // 10. Locate Thread Menu adjacent to H1
-                let ellipsisIcon = null;
-                for (let i = 0; i < 30; i++) {
-                    const h1 = document.querySelector('h1');
-                    if (h1 && h1.parentElement) {
-                        ellipsisIcon = h1.parentElement.querySelector('.lucide-ellipsis-vertical');
-                        if (ellipsisIcon) break;
-                    }
-                    await sleep(300);
-                }
-
-                if (!ellipsisIcon) {
-                    console.warn("[ReadOmni-Workflow] [STEP 4] Could not find H1-scoped ellipsis, trying global search...");
-                    ellipsisIcon = await waitForElement('.lucide-ellipsis-vertical');
-                }
-
-                const ellipsisBtn = ellipsisIcon.closest('button') || ellipsisIcon.closest('[role="button"]') || ellipsisIcon.parentElement;
-                reactClick(ellipsisBtn);
-                await sleep(500);
-
-                const editItem = await waitForElement('[role="menuitem"], button, div', 'Edit', true);
-                reactClick(editItem);
-                await sleep(500);
-
-                const titleInput = await waitForElement('input[name="title"]');
-                setReactInputValue(titleInput, nextName);
-
-                const saveChangesBtn = await waitForElement('button[type="submit"]', 'Save changes');
-                reactClick(saveChangesBtn);
-                console.log("[ReadOmni-Workflow] [STEP 4] New title saved.");
-
-                await sleep(1000);
-
-                // 11. Navigate to Add Translation / New chapter
-                console.log("[ReadOmni-Workflow] [STEP 4] Navigating to Add Translation / New chapter...");
-                const currentThreadId = window.location.pathname.match(/\/thread\/([a-zA-Z0-9-]+)/)?.[1];
-
-                let newBtn = document.querySelector('button[aria-label="Add chapters"]') ||
-                             Array.from(document.querySelectorAll('button')).find(b => {
-                                 const txt = b.textContent.trim();
-                                 return (txt === 'New' || txt.includes('Add Translation')) && b.querySelector('svg.lucide-plus');
-                             }) ||
-                             document.querySelector('a[href*="/?thread="]');
-
-                if (newBtn) {
-                    reactClick(newBtn);
-                    await sleep(1000);
-                }
-
-                // If still on the thread page after clicking, navigate via URL directly
-                if (currentThreadId && window.location.pathname.includes('/thread/')) {
-                    console.log("[ReadOmni-Workflow] [STEP 4] Navigating directly via URL to /?thread=" + currentThreadId);
-                    window.location.href = `/?thread=${currentThreadId}`;
-                }
-
-                console.log("[ReadOmni-Workflow] Workflow Complete! Thread Renamed to: " + nextName);
+            // GUARDRAIL: Verify thread ID before modifying
+            const currentThreadId = window.location.pathname.match(/\/thread\/([a-zA-Z0-9-]+)/)?.[1];
+            if (lockedThreadId && currentThreadId && currentThreadId !== lockedThreadId) {
+                console.warn(`[ReadOmni-Workflow] SAFETY ABORT: Opened thread (${currentThreadId}) !== target thread (${lockedThreadId}). Aborting to protect existing thread data.`);
                 clearWorkflowState();
+                return;
+            }
+
+            // STEP 1: Create an Empty Thread from Library
+            if (state === 'STEP_CREATE_THREAD') {
+                updateStatusBanner("Opening Library thread creator...");
+
+                if (window.location.pathname !== '/library') {
+                    window.location.href = '/library';
+                    return;
+                }
+
+                const newThreadBtn = await waitForElement('button', 'New thread', false, 10000);
+                reactClick(newThreadBtn);
+                await sleepWithAbort(500);
+
+                const emptyThreadBtn = await waitForElement('button', 'Empty thread', false, 8000);
+                sessionStorage.setItem(STATE_KEY, 'STEP_GLOSSARY_TAB');
+                reactClick(emptyThreadBtn);
+
+                // Prevent any accidental double-clicks
+                emptyThreadBtn.disabled = true;
+                emptyThreadBtn.style.pointerEvents = 'none';
+
+                updateStatusBanner("Waiting for new thread page...");
+                const navStart = Date.now();
+                while (!window.location.pathname.startsWith('/thread/') && Date.now() - navStart < 15000) {
+                    await sleepWithAbort(250);
+                }
+
+                if (!window.location.pathname.startsWith('/thread/')) {
+                    throw new Error("Navigation to created thread timed out.");
+                }
+
+                // LOCK WORKFLOW TO CREATED THREAD ID
+                const createdId = window.location.pathname.match(/\/thread\/([a-zA-Z0-9-]+)/)?.[1];
+                if (createdId) {
+                    sessionStorage.setItem(TARGET_THREAD_ID_KEY, createdId);
+                    console.log(`[ReadOmni-Workflow] Locked to target thread ID: ${createdId}`);
+                }
+
+                state = 'STEP_GLOSSARY_TAB';
+                await sleepWithAbort(400);
+            }
+
+            // STEP 2: Navigate to Glossary Tab on Thread Page
+            if (state === 'STEP_GLOSSARY_TAB') {
+                updateStatusBanner(`Opening Glossary for "${nextName}"...`);
+                await waitForElement('h1', null, false, 15000);
+
+                const isAlreadyGlossary = window.location.search.includes('tab=glossary') ||
+                document.querySelector('button[role="tab"][data-active]')?.textContent.includes('Glossary');
+
+                if (!isAlreadyGlossary) {
+                    const glossaryTab = Array.from(document.querySelectorAll('button[role="tab"], button'))
+                    .find(b => b.textContent.trim().includes('Glossary'));
+
+                    if (glossaryTab) {
+                        reactClick(glossaryTab);
+                    } else {
+                        const tabBtn = await waitForElement('button[role="tab"], button', 'Glossary', false, 8000);
+                        reactClick(tabBtn);
+                    }
+                    await sleepWithAbort(800);
+                }
+
+                sessionStorage.setItem(STATE_KEY, 'STEP_IMPORT_GLOSSARY');
+                state = 'STEP_IMPORT_GLOSSARY';
+            }
+
+            // STEP 3: Import Glossary CSVs Sequentially
+            if (state === 'STEP_IMPORT_GLOSSARY') {
+                await waitForElement('button[aria-label="More actions"], [data-slot="empty-content"] button', null, false, 10000);
+
+                for (let i = 0; i < csvList.length; i++) {
+                    checkAbort();
+                    updateStatusBanner(`Importing CSV ${i + 1} of ${csvList.length}...`);
+
+                    let bulkTextarea = document.querySelector('textarea[name="input"]');
+
+                    if (!bulkTextarea) {
+                        const tabPanel = document.querySelector('[role="tabpanel"]') || document;
+                        let moreActionsBtn = tabPanel.querySelector('button[aria-label="More actions"]');
+
+                        if (!moreActionsBtn) {
+                            moreActionsBtn = Array.from(tabPanel.querySelectorAll('button')).find(b => {
+                                return b.querySelector('svg.lucide-ellipsis, svg.lucide-more-horizontal') &&
+                                !b.getAttribute('aria-label')?.includes('Thread');
+                            });
+                        }
+
+                        if (!moreActionsBtn) {
+                            moreActionsBtn = await waitForElement('button[aria-label="More actions"]', null, false, 8000);
+                        }
+
+                        reactClick(moreActionsBtn);
+                        await sleepWithAbort(400);
+
+                        const importMenuItem = await findMenuItem('Import CSV', 6000);
+                        reactClick(importMenuItem);
+                        await sleepWithAbort(500);
+
+                        bulkTextarea = await waitForElement('textarea[name="input"]', null, false, 8000);
+                    }
+
+                    // Paste terms for file i
+                    setReactInputValue(bulkTextarea, csvList[i]);
+                    await sleepWithAbort(250);
+
+                    const submitTermsBtn = await waitForElement('button[form="import-csv"], button[type="submit"]', 'Import', false, 5000);
+                    reactClick(submitTermsBtn);
+
+                    // Wait for modal to process and close
+                    updateStatusBanner(`Saving CSV ${i + 1} of ${csvList.length}...`);
+                    await waitForElementToDisappear('textarea[name="input"]', 15000);
+                    await sleepWithAbort(600);
+                }
+
+                console.log("[ReadOmni-Workflow] [STEP 3] All glossary files successfully imported!");
+                sessionStorage.setItem(STATE_KEY, 'STEP_RENAME_THREAD');
+                state = 'STEP_RENAME_THREAD';
+            }
+
+            // STEP 4: Rename Thread to target name & redirect
+            if (state === 'STEP_RENAME_THREAD') {
+                updateStatusBanner(`Renaming thread to "${nextName}"...`);
+
+                let threadMenuBtn = document.querySelector('button[aria-label="Thread actions"]');
+                if (!threadMenuBtn) {
+                    const h1 = document.querySelector('h1');
+                    const header = h1?.closest('header');
+                    if (header) {
+                        threadMenuBtn = header.querySelector('button[aria-label="Thread actions"]') ||
+                        header.querySelector('button[aria-haspopup="menu"]');
+                    }
+                }
+                if (!threadMenuBtn) {
+                    threadMenuBtn = await waitForElement('button[aria-label="Thread actions"]', null, false, 6000);
+                }
+
+                reactClick(threadMenuBtn);
+                await sleepWithAbort(400);
+
+                const renameItem = await findMenuItem('Rename', 6000);
+                reactClick(renameItem);
+                await sleepWithAbort(500);
+
+                const titleInput = await waitForElement('input[name="title"]', null, false, 6000);
+                setReactInputValue(titleInput, nextName);
+                await sleepWithAbort(250);
+
+                const saveBtn = await waitForElement('button[type="submit"]', 'Save', false, 5000);
+                reactClick(saveBtn);
+
+                // Wait for the rename dialog to close
+                await waitForElementToDisappear('input[name="title"]', 6000);
+
+                const finalThreadId = window.location.pathname.match(/\/thread\/([a-zA-Z0-9-]+)/)?.[1];
+                updateStatusBanner(`✅ Finished! Opening translate...`);
+                await sleepWithAbort(600);
+
+                clearWorkflowState();
+
+                if (finalThreadId) {
+                    window.location.href = `/?thread=${finalThreadId}`;
+                } else {
+                    window.location.href = `/`;
+                }
             }
 
         } catch (error) {
-            console.error("[ReadOmni-Workflow] Error during execution:", error);
-            alert("Workflow stopped due to an error. Check console.");
+            if (error.message === 'WORKFLOW_CANCELLED') {
+                console.log("[ReadOmni-Workflow] Workflow successfully cancelled by user.");
+            } else {
+                console.error("[ReadOmni-Workflow] Error during execution:", error);
+                alert("Workflow stopped due to an error. Check console.");
+            }
             clearWorkflowState();
+        } finally {
+            isRunning = false;
         }
     }
 
@@ -375,8 +545,10 @@
     }
 
     function injectTriggerButton() {
-        // Only run on homepage
-        if (window.location.pathname !== '/' || window.location.search !== '') {
+        const isCleanHome = window.location.pathname === '/' && window.location.search === '';
+        const isLibrary = window.location.pathname === '/library';
+
+        if (!isCleanHome && !isLibrary) {
             const existingBtn = document.getElementById('ro-workflow-btn');
             if (existingBtn) existingBtn.remove();
             return;
@@ -387,48 +559,46 @@
         const btn = document.createElement('button');
         btn.id = 'ro-workflow-btn';
         btn.innerHTML = '🚀<span class="hidden sm:inline ml-2">Workflow</span>';
-        btn.className = "inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-[color,box-shadow] disabled:pointer-events-none disabled:opacity-50 ring-ring/10 dark:ring-ring/20 outline-ring/50 focus-visible:ring-4 focus-visible:outline-1 bg-secondary text-secondary-foreground shadow-xs hover:bg-secondary/80 h-9 px-3 shrink-0";
+        btn.className = "inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-[color,box-shadow] disabled:pointer-events-none disabled:opacity-50 ring-ring/10 dark:ring-ring/20 outline-ring/50 focus-visible:ring-4 focus-visible:outline-1 bg-primary text-primary-foreground shadow-sm hover:bg-primary/90 h-9 px-3 shrink-0 cursor-pointer";
         btn.type = "button";
         btn.onclick = triggerFilePickerAndStart;
 
-        // Find top-right header icon container
-        let container = document.querySelector('.lucide-bell')?.closest('button')?.parentElement;
-        if (!container) {
-            container = document.querySelector('header .flex-shrink-0.flex-row.items-center');
-        }
-        if (!container) {
-            container = document.querySelector('header')?.lastElementChild;
-        }
+        Object.assign(btn.style, {
+            position: 'fixed',
+            top: '12px',
+            right: '24px',
+            zIndex: '999999'
+        });
 
-        if (container && container.classList.contains('flex')) {
-            container.insertBefore(btn, container.firstChild);
-        } else {
-            Object.assign(btn.style, {
-                position: 'fixed',
-                top: '12px',
-                right: '100px',
-                zIndex: '999999'
-            });
-            document.body.appendChild(btn);
-        }
+        document.body.appendChild(btn);
     }
 
-    // Watch DOM for URL / view changes to keep the trigger button available
+    // Debounced Observer for URL changes
     let lastUrl = location.href;
+    let observerTimeout = null;
+
     new MutationObserver(() => {
-        injectTriggerButton();
-        const url = location.href;
-        if (url !== lastUrl) {
-            lastUrl = url;
-            injectTriggerButton();
-        }
-    }).observe(document, {subtree: true, childList: true});
+        if (observerTimeout) return;
+        observerTimeout = setTimeout(() => {
+            observerTimeout = null;
+            const url = location.href;
+            if (url !== lastUrl) {
+                lastUrl = url;
+                injectTriggerButton();
+                if (!isRunning && sessionStorage.getItem(STATE_KEY)) {
+                    doWorkflow();
+                }
+            }
+        }, 150);
+    }).observe(document, { subtree: true, childList: true });
 
     injectTriggerButton();
 
-    // Trigger workflow recovery on page load
-    if (sessionStorage.getItem(STATE_KEY)) {
-        setTimeout(doWorkflow, 1000);
+    // Trigger workflow recovery on page load if active and not expired
+    if (sessionStorage.getItem(STATE_KEY) && !isStateExpired()) {
+        setTimeout(doWorkflow, 800);
+    } else if (isStateExpired()) {
+        clearWorkflowState();
     }
 
 })();
