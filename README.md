@@ -4,9 +4,8 @@ https://raw.githubusercontent.com/tiklii/userscripts/master/69shuba.user.js
 https://raw.githubusercontent.com/tiklii/userscripts/master/sudugu.user.js
 https://raw.githubusercontent.com/tiklii/userscripts/master/bqquge.user.js
 https://raw.githubusercontent.com/tiklii/userscripts/master/sto9.user.js
+https://raw.githubusercontent.com/tiklii/userscripts/master/twkan.user.js
 https://raw.githubusercontent.com/tiklii/userscripts/master/googletl-x-button.user.js
-https://raw.githubusercontent.com/tiklii/userscripts/master/readomni-add-glossary.user.js
 https://raw.githubusercontent.com/tiklii/userscripts/master/readomni-auto-workflow.user.js
 https://raw.githubusercontent.com/tiklii/userscripts/master/readomni-multidownload.user.js
-https://raw.githubusercontent.com/tiklii/userscripts/master/twkan.user.js
 ```
