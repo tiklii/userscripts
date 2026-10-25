@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ReadOmni Auto-Workflow
 // @namespace    https://github.com/tiklii/userscripts
-// @version      2.2
-// @description  Automates ReadOmni empty thread creation, multi-file glossary importing, and renaming with native UI integration, mobile drawer support, and guardrails.
+// @version      2.3
+// @description  Automates ReadOmni empty thread creation, chunked multi-file glossary importing, and renaming with seamless in-page UI integration, mobile drawer support, and guardrails.
 // @author       tiklii
 // @match        https://app.readomni.com/*
 // @grant        none
@@ -161,7 +161,6 @@
                 lines.shift();
             }
 
-            // Split into safe chunks of at most 4000 terms
             for (let j = 0; j < lines.length; j += GLOSSARY_CHUNK_SIZE) {
                 const chunk = lines.slice(j, j + GLOSSARY_CHUNK_SIZE);
                 if (chunk.length > 0) {
@@ -311,7 +310,7 @@
             const nextName = getNextThreadName(files[0].name);
             const csvChunks = await parseCsvFiles(files);
 
-            console.log(`[ReadOmni-Workflow] Target thread name: "${nextName}" | Total batch chunks (<=4000): ${csvChunks.length}`);
+            console.log(`[ReadOmni-Workflow] Target thread name: "${nextName}" | Total batch chunks: ${csvChunks.length}`);
 
             isAborted = false;
             sessionStorage.setItem(CSV_LIST_KEY, JSON.stringify(csvChunks));
@@ -340,7 +339,6 @@
         let state = sessionStorage.getItem(STATE_KEY);
         if (!state) return;
 
-        // Auto-expire runs older than 5 minutes
         if (isStateExpired()) {
             console.warn("[ReadOmni-Workflow] Stale workflow state detected. Purging state.");
             clearWorkflowState();
@@ -355,7 +353,7 @@
             const nextName = sessionStorage.getItem(NAME_KEY);
             const lockedThreadId = sessionStorage.getItem(TARGET_THREAD_ID_KEY);
 
-            // GUARDRAIL: Strict Thread ID check to never touch unrelated novels
+            // Guardrail: Strict Thread ID check
             const currentThreadId = window.location.pathname.match(/\/thread\/([a-zA-Z0-9-]+)/)?.[1];
             if (lockedThreadId && currentThreadId && currentThreadId !== lockedThreadId) {
                 console.warn(`[ReadOmni-Workflow] SAFETY ABORT: Opened thread (${currentThreadId}) !== target thread (${lockedThreadId}). Aborting.`);
@@ -380,7 +378,6 @@
                 sessionStorage.setItem(STATE_KEY, 'STEP_GLOSSARY_TAB');
                 reactClick(emptyThreadBtn);
 
-                // Prevent duplicate click submission
                 emptyThreadBtn.disabled = true;
                 emptyThreadBtn.style.pointerEvents = 'none';
 
@@ -394,7 +391,6 @@
                     throw new Error("Navigation to created thread timed out.");
                 }
 
-                // Lock workflow to created thread ID
                 const createdId = window.location.pathname.match(/\/thread\/([a-zA-Z0-9-]+)/)?.[1];
                 if (createdId) {
                     sessionStorage.setItem(TARGET_THREAD_ID_KEY, createdId);
@@ -405,7 +401,7 @@
                 await sleepWithAbort(400);
             }
 
-            // STEP 2: Navigate to Glossary View on Thread Page (Desktop tabs & Mobile cards)
+            // STEP 2: Navigate to Glossary View on Thread Page
             if (state === 'STEP_GLOSSARY_TAB') {
                 updateStatusBanner(`Opening Glossary for "${nextName}"...`);
                 await waitForElement('h1', null, false, 15000);
@@ -425,7 +421,6 @@
                         reactClick(target);
                     }
 
-                    // Wait for glossary controls to appear
                     await waitForElement('button[aria-label="Glossary tools"], button[aria-label="More actions"], [data-slot="empty-content"] button', null, false, 10000);
                 }
 
@@ -482,7 +477,7 @@
                         bulkTextarea = await waitForElement('textarea[name="input"]', null, false, 8000);
                     }
 
-                    // Paste CSV terms for this batch chunk
+                    // Paste CSV terms for this chunk
                     setReactInputValue(bulkTextarea, csvList[i]);
                     await sleepWithAbort(250);
 
@@ -497,11 +492,10 @@
 
                 console.log("[ReadOmni-Workflow] [STEP 3] All glossary files successfully imported!");
 
-                // CRITICAL: Update state to STEP_RENAME_THREAD immediately so any reload/observer tick never re-runs STEP 3
                 sessionStorage.setItem(STATE_KEY, 'STEP_RENAME_THREAD');
                 state = 'STEP_RENAME_THREAD';
 
-                // Return from Glossary subpage on mobile only (Desktop already has the header visible)
+                // Return from Glossary subpage on mobile only
                 const isMobile = window.innerWidth < 768;
                 if (isMobile && window.location.search.includes('tab=glossary')) {
                     updateStatusBanner("Returning to thread view...");
@@ -513,7 +507,6 @@
                     }
                 }
 
-                // Wait for the Thread actions button to be present
                 await waitForElement('button[aria-label="Thread actions"]', null, false, 10000);
             }
 
@@ -526,7 +519,6 @@
                 reactClick(threadMenuBtn);
                 await sleepWithAbort(500);
 
-                // Find and click "Rename, tags and note"
                 console.log("[ReadOmni-Workflow] [STEP 4] Clicking 'Rename, tags and note'...");
                 const renameItem = await findActionItem('Rename', 6000);
                 reactClick(renameItem);
@@ -540,7 +532,6 @@
                 reactClick(saveBtn);
                 console.log("[ReadOmni-Workflow] [STEP 4] New title saved.");
 
-                // Wait for the rename dialog to close
                 await waitForElementToDisappear('input[name="title"]', 6000);
                 await sleepWithAbort(500);
 
@@ -573,7 +564,6 @@
 
                 clearWorkflowState();
 
-                // Fallback direct URL navigation if not redirected within 1.5s
                 await sleep(1500);
                 if (finalThreadId && !window.location.search.includes('thread=')) {
                     window.location.href = `/?thread=${finalThreadId}`;
@@ -593,7 +583,7 @@
         }
     }
 
-    // --- SEAMLESS UI INJECTION & TRIGGER ---
+    // --- SEAMLESS IN-PAGE UI INJECTION ---
 
     function triggerFilePickerAndStart() {
         const fileInput = document.createElement('input');
@@ -620,7 +610,14 @@
             return;
         }
 
-        if (document.getElementById('ro-workflow-btn')) return;
+        // Avoid duplicate injections if already placed inside a valid container
+        const existingBtn = document.getElementById('ro-workflow-btn');
+        if (existingBtn && existingBtn.parentElement && existingBtn.parentElement !== document.body) {
+            return;
+        }
+        if (existingBtn) {
+            existingBtn.remove();
+        }
 
         const isMobile = window.innerWidth < 768;
 
@@ -628,45 +625,49 @@
         btn.id = 'ro-workflow-btn';
         btn.type = 'button';
         btn.onclick = triggerFilePickerAndStart;
+        btn.innerHTML = '🚀<span class="ml-1.5 font-medium">Workflow</span>';
+        btn.className = "inline-flex items-center justify-center whitespace-nowrap rounded-md text-xs sm:text-sm font-medium transition-[color,box-shadow] border border-border bg-card shadow-xs hover:bg-accent hover:text-accent-foreground h-8 sm:h-9 px-2.5 sm:px-3 gap-1 cursor-pointer";
 
-        if (isMobile) {
-            btn.innerHTML = '🚀<span class="ml-1 text-xs font-semibold">Workflow</span>';
-            btn.className = "inline-flex items-center justify-center whitespace-nowrap rounded-md text-xs font-medium border border-border/80 bg-background/80 shadow-xs hover:bg-accent text-foreground h-8 px-2.5 shrink-0";
+        // 1. On / (Translate Home): Embed cleanly in the H1 heading row above the textarea
+        if (isCleanHome) {
+            const homeHeading = document.querySelector('h1:has(button[aria-label*="Thread"])') ||
+            Array.from(document.querySelectorAll('h1')).find(h => h.textContent.includes('Translate into'));
 
-            const mobileHeaderActions = document.querySelector('header .flex-shrink-0.flex-row.items-center');
-            if (mobileHeaderActions) {
-                mobileHeaderActions.insertBefore(btn, mobileHeaderActions.firstChild);
+            if (homeHeading) {
+                btn.style.marginLeft = 'auto';
+                btn.style.alignSelf = 'center';
+                homeHeading.appendChild(btn);
                 return;
             }
-        } else {
-            btn.innerHTML = '🚀<span class="ml-1.5 font-medium">Workflow</span>';
-            btn.className = "inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-[color,box-shadow] border border-border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground h-9 px-3 shrink-0";
 
-            if (isLibrary) {
-                const newThreadBtn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('New thread'));
-                if (newThreadBtn && newThreadBtn.parentElement) {
-                    newThreadBtn.parentElement.insertBefore(btn, newThreadBtn);
-                    return;
-                }
-            }
-
-            if (isCleanHome) {
-                const modelSelector = document.querySelector('button[aria-label*="Translation settings"]');
-                if (modelSelector && modelSelector.parentElement) {
-                    modelSelector.parentElement.insertBefore(btn, modelSelector.nextSibling);
-                    btn.classList.add('h-8', 'text-xs', 'px-2.5');
-                    return;
-                }
+            // Fallback: Embed inside the form's bottom action bar
+            const formToolbar = document.querySelector('form .flex.items-center.justify-between') ||
+            document.querySelector('form .flex.items-center.gap-0\\.5');
+            if (formToolbar) {
+                btn.classList.add('h-7', 'text-xs', 'px-2');
+                formToolbar.appendChild(btn);
+                return;
             }
         }
 
-        Object.assign(btn.style, {
-            position: 'fixed',
-            top: isMobile ? '10px' : '14px',
-            right: isMobile ? '56px' : '24px',
-            zIndex: '40'
-        });
-        document.body.appendChild(btn);
+        // 2. On /library
+        if (isLibrary) {
+            // Desktop: Place beside "New thread" button
+            const newThreadBtn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('New thread'));
+            if (newThreadBtn && newThreadBtn.parentElement) {
+                newThreadBtn.parentElement.insertBefore(btn, newThreadBtn);
+                return;
+            }
+
+            // Mobile: Place in the toolbar next to search/filters
+            const searchToolbar = document.querySelector('.sticky .flex.flex-wrap.items-center') ||
+            document.querySelector('.container .flex.flex-wrap.items-center');
+            if (searchToolbar) {
+                btn.classList.add('h-9', 'text-xs', 'px-2.5');
+                searchToolbar.appendChild(btn);
+                return;
+            }
+        }
     }
 
     // Debounced Observer for URL changes
