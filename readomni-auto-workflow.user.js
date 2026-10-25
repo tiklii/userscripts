@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ReadOmni Auto-Workflow
 // @namespace    https://github.com/tiklii/userscripts
-// @version      2.1
+// @version      2.2
 // @description  Automates ReadOmni empty thread creation, multi-file glossary importing, and renaming with native UI integration, mobile drawer support, and guardrails.
 // @author       tiklii
 // @match        https://app.readomni.com/*
@@ -18,6 +18,7 @@
     const TARGET_THREAD_ID_KEY = 'ro_wf_target_thread_id';
     const TIMESTAMP_KEY = 'ro_wf_timestamp';
     const MAX_WORKFLOW_AGE_MS = 5 * 60 * 1000; // 5 minute expiration
+    const GLOSSARY_CHUNK_SIZE = 4000; // ReadOmni limit is 5000; chunk at 4000 for safety
 
     let isRunning = false;
     let isAborted = false;
@@ -71,7 +72,7 @@
     }
 
     // Waits for an element to be unmounted / closed
-    async function waitForElementToDisappear(selector, timeout = 15000) {
+    async function waitForElementToDisappear(selector, timeout = 25000) {
         const endTime = Date.now() + timeout;
         while (document.querySelector(selector)) {
             checkAbort();
@@ -146,8 +147,9 @@
         }
     }
 
+    // Parses files and automatically splits large sets into chunks of GLOSSARY_CHUNK_SIZE (4000)
     async function parseCsvFiles(files) {
-        const csvList = [];
+        const csvChunks = [];
         const isHeader = (line) => /^raw,translation|^term,translation/i.test(line);
 
         for (let i = 0; i < files.length; i++) {
@@ -158,11 +160,16 @@
             if (lines.length > 0 && isHeader(lines[0])) {
                 lines.shift();
             }
-            if (lines.length > 0) {
-                csvList.push(lines.join('\n'));
+
+            // Split into safe chunks of at most 4000 terms
+            for (let j = 0; j < lines.length; j += GLOSSARY_CHUNK_SIZE) {
+                const chunk = lines.slice(j, j + GLOSSARY_CHUNK_SIZE);
+                if (chunk.length > 0) {
+                    csvChunks.push(chunk.join('\n'));
+                }
             }
         }
-        return csvList;
+        return csvChunks;
     }
 
     function getNextThreadName(filename) {
@@ -302,12 +309,12 @@
             console.log("[ReadOmni-Workflow] Starting workflow with", files.length, "file(s)...");
 
             const nextName = getNextThreadName(files[0].name);
-            const csvList = await parseCsvFiles(files);
+            const csvChunks = await parseCsvFiles(files);
 
-            console.log(`[ReadOmni-Workflow] Target thread name: "${nextName}"`);
+            console.log(`[ReadOmni-Workflow] Target thread name: "${nextName}" | Total batch chunks (<=4000): ${csvChunks.length}`);
 
             isAborted = false;
-            sessionStorage.setItem(CSV_LIST_KEY, JSON.stringify(csvList));
+            sessionStorage.setItem(CSV_LIST_KEY, JSON.stringify(csvChunks));
             sessionStorage.setItem(NAME_KEY, nextName);
             sessionStorage.setItem(TIMESTAMP_KEY, Date.now().toString());
             sessionStorage.setItem(STATE_KEY, 'STEP_CREATE_THREAD');
@@ -407,7 +414,6 @@
                 document.querySelector('button[role="tab"][data-active]')?.textContent.includes('Glossary');
 
                 if (!isAlreadyGlossary) {
-                    // Mobile navigation uses card link a[href*="tab=glossary"], Desktop uses tab button
                     const glossaryTarget = document.querySelector('a[href*="tab=glossary"]') ||
                     Array.from(document.querySelectorAll('button[role="tab"], button, a'))
                     .find(el => el.textContent.trim().includes('Glossary'));
@@ -427,18 +433,17 @@
                 state = 'STEP_IMPORT_GLOSSARY';
             }
 
-            // STEP 3: Import Glossary CSVs Sequentially
+            // STEP 3: Import Glossary CSVs Sequentially in Chunks of <= 4000
             if (state === 'STEP_IMPORT_GLOSSARY') {
                 await waitForElement('button[aria-label="Glossary tools"], button[aria-label="More actions"], [data-slot="empty-content"] button', null, false, 10000);
 
                 for (let i = 0; i < csvList.length; i++) {
                     checkAbort();
-                    updateStatusBanner(`Importing CSV ${i + 1} of ${csvList.length}...`);
+                    updateStatusBanner(`Importing batch ${i + 1} of ${csvList.length}...`);
 
                     let bulkTextarea = document.querySelector('textarea[name="input"]');
 
                     if (!bulkTextarea) {
-                        // Check if the empty-state "Import a CSV" button is directly visible (quickest path on new threads)
                         const emptyImportBtn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Import a CSV');
 
                         if (emptyImportBtn) {
@@ -446,7 +451,6 @@
                             reactClick(emptyImportBtn);
                             await sleepWithAbort(500);
                         } else {
-                            // Find the 3-dot tools button: "Glossary tools" (Mobile) or "More actions" (Desktop)
                             let moreActionsBtn = document.querySelector('button[aria-label="Glossary tools"]') ||
                             document.querySelector('button[aria-label="More actions"]');
 
@@ -478,7 +482,7 @@
                         bulkTextarea = await waitForElement('textarea[name="input"]', null, false, 8000);
                     }
 
-                    // Paste CSV terms for this file
+                    // Paste CSV terms for this batch chunk
                     setReactInputValue(bulkTextarea, csvList[i]);
                     await sleepWithAbort(250);
 
@@ -486,8 +490,8 @@
                     reactClick(submitTermsBtn);
 
                     // Wait for modal to process and close
-                    updateStatusBanner(`Saving CSV ${i + 1} of ${csvList.length}...`);
-                    await waitForElementToDisappear('textarea[name="input"]', 15000);
+                    updateStatusBanner(`Saving batch ${i + 1} of ${csvList.length}...`);
+                    await waitForElementToDisappear('textarea[name="input"]', 25000);
                     await sleepWithAbort(600);
                 }
 
