@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ReadOmni Chapters ZIP & EPUB Downloader
 // @namespace    https://github.com/tiklii/userscripts
-// @version      38
+// @version      39
 // @description  Download chapters from readomni
 // @author       tiklii
 // @match        https://app.readomni.com/*
@@ -63,7 +63,6 @@
         });
     }
 
-    // Unified click helper
     function omniClick(element) {
         if (!element) return;
         try {
@@ -216,7 +215,7 @@
         } catch (e) { }
     }
 
-    // --- GLOSSARY EXPORT INTERCEPTOR ---
+    // --- GLOSSARY EXPORT INTERCEPTOR (DESKTOP & MOBILE COMPATIBLE) ---
     async function exportGlossary(threadName, runId) {
         try {
             let capturedDownloads = [];
@@ -275,31 +274,43 @@
             };
                 window.addEventListener('copy', copyListener, true);
 
+                // 1. Switch to Glossary (Desktop Tab OR Mobile Navigation Link)
                 const glossaryTab = Array.from(document.querySelectorAll('button[role="tab"]')).find(b => b.textContent.trim().startsWith('Glossary'));
+                const glossaryCardLink = document.querySelector('a[href*="tab=glossary"]');
+
                 if (glossaryTab) {
                     const isActive = glossaryTab.getAttribute('aria-selected') === 'true' || glossaryTab.hasAttribute('data-active');
                     if (!isActive) {
                         omniClick(glossaryTab);
-                        await waitForElement('button[aria-label="More actions"]', 6000);
+                        await waitForElement('button[aria-label="More actions"], button[aria-label="Glossary tools"]', 6000);
                     }
+                } else if (glossaryCardLink) {
+                    omniClick(glossaryCardLink);
+                    await waitForElement('button[aria-label="Glossary tools"], button[aria-label="More actions"]', 6000);
                 }
 
-                const moreBtn = await waitForElement('button[aria-label="More actions"]', 5000);
-                if (moreBtn) {
-                    omniClick(moreBtn);
+                // 2. Open "More actions" (Desktop) or "Glossary tools" (Mobile)
+                const toolsBtn = await waitForElement('button[aria-label="Glossary tools"], button[aria-label="More actions"]', 5000);
+                if (toolsBtn) {
+                    omniClick(toolsBtn);
 
+                    // Wait for either desktop dropdown menu or mobile drawer dialog
                     let exportBtn = null;
                     for (let i = 0; i < 30; i++) {
-                        const menuItems = Array.from(document.querySelectorAll('[role="menuitem"]'));
-                        exportBtn = menuItems.find(el => el.textContent.includes('Export CSV')) ||
-                        document.querySelector('[role="menuitem"]:has(svg.lucide-download)');
+                        const candidates = Array.from(document.querySelectorAll('[role="menuitem"], [data-slot="drawer-content"] button, [data-drawer-content] button, div[role="dialog"] button, button'));
+                        exportBtn = candidates.find(el => {
+                            const text = el.textContent || '';
+                            return text.includes('Export CSV') && !el.closest('header');
+                        });
                         if (exportBtn) break;
                         await sleep(100);
                     }
 
+                    // 3. Click "Export CSV"
                     if (exportBtn) {
                         omniClick(exportBtn);
 
+                        // Wait for download or clipboard copy
                         for (let i = 0; i < 150; i++) {
                             if (capturedDownloads.length > 0) {
                                 await sleep(1000);
@@ -323,6 +334,7 @@
 
                 const finalGlossaryFiles = [];
 
+                // 4. Collect downloaded CSV files
                 const seenFinalNames = new Set();
                 for (let file of capturedDownloads) {
                     if (seenFinalNames.has(file.name)) continue;
@@ -343,6 +355,7 @@
                     }
                 }
 
+                // 5. Clipboard fallback if few terms were exported
                 if (finalGlossaryFiles.length === 0) {
                     let clipText = capturedClipboard;
                     if (!clipText && navigator.clipboard && navigator.clipboard.readText) {
@@ -366,10 +379,19 @@
                     await saveGlossaryFiles(runId, finalGlossaryFiles);
                 }
 
+                // 6. Return back to Translation / Chapters view (Desktop Tab or Mobile Back Button)
                 const transTab = Array.from(document.querySelectorAll('button[role="tab"]')).find(b => b.textContent.trim().startsWith('Translation'));
+                const mobileBackBtn = document.querySelector('header button[aria-label="Back"]');
+
                 if (transTab) {
                     omniClick(transTab);
                     await sleep(400);
+                } else if (mobileBackBtn) {
+                    omniClick(mobileBackBtn);
+                    await sleep(500);
+                } else if (window.location.search.includes('tab=glossary')) {
+                    window.history.back();
+                    await sleep(500);
                 }
         } catch (err) {
             console.error("Glossary export error:", err);
@@ -584,7 +606,6 @@
 
         updateCancelButtonText("Generating Files...");
 
-        // Load chapters from IndexedDB (no 5MB storage limit)
         const loadedChapters = await loadChapters(state.runId);
         logDebug(state, `Preparing downloads. Total files collected in IDB: ${loadedChapters.length}`);
 
@@ -592,7 +613,7 @@
         const dateStr = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
 
         if (state.logs && state.logs.length > 0) {
-            const logContent = "--- READOMNI DEBUG LOG v38 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
+            const logContent = "--- READOMNI DEBUG LOG v39 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
             dl.log = { url: URL.createObjectURL(new Blob([logContent], { type: 'text/plain' })), name: `readomni_debug_${new Date().getTime()}.txt` };
         }
 
@@ -1011,7 +1032,7 @@
  includeGlossary: includeGlossary,
  threadName: customTitle, count: 1, retryCount: 0, logs: []
         };
-        logDebug(state, `--- NEW RUN INITIALIZED (V38 Sequential) ---`);
+        logDebug(state, `--- NEW RUN INITIALIZED (V39 Sequential) ---`);
         localStorage.setItem(STATE_KEY, JSON.stringify(state));
         const runUrl = new URL(firstLink.href, window.location.origin);
         runUrl.searchParams.set('ro_start_download', 'true');
@@ -1501,7 +1522,7 @@
  threadName: chosenTitle, count: 1, retryCount: 0, logs: [],
  queue: finalQueue, queueIndex: 0
                 };
-                logDebug(state, `--- NEW RUN INITIALIZED (V38 Selective) Total: ${finalQueue.length} ---`);
+                logDebug(state, `--- NEW RUN INITIALIZED (V39 Selective) Total: ${finalQueue.length} ---`);
                 localStorage.setItem(STATE_KEY, JSON.stringify(state));
 
                 const runUrl = new URL(finalQueue[0].url, window.location.origin);
@@ -1553,30 +1574,39 @@
         document.body.appendChild(btn);
     }
 
+    // --- SEAMLESS IN-PAGE DOWNLOAD BUTTON INJECTION ---
     function injectStartButton() {
         if (document.getElementById('ro-bulk-btn')) return;
+
+        // Find the native thread header actions ("...") button
+        const actionsBtn = document.querySelector('header button[aria-label="Thread actions"]');
+        if (!actionsBtn || !actionsBtn.parentElement) return;
+
         const btn = document.createElement('button');
         btn.id = 'ro-bulk-btn';
-        btn.title = "Download Thread";
+        btn.type = 'button';
+        btn.title = 'Download Book (EPUB & ZIP)';
+        btn.setAttribute('aria-label', 'Download Book');
+
+        // Inherits exact classes from ReadOmni's native header action button
+        btn.className = actionsBtn.className;
+        btn.style.display = 'inline-flex';
+        btn.style.alignItems = 'center';
+        btn.style.justifyContent = 'center';
+        btn.style.cursor = 'pointer';
+
         btn.innerHTML = `
-        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-download size-4 max-md:size-5">
+        <path d="M12 15V3"></path>
+        <path d="m7 10 5 5 5-5"></path>
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-        <polyline points="7 10 12 15 17 10"></polyline>
-        <line x1="12" x2="12" y1="15" y2="3"></line>
         </svg>
         `;
-        Object.assign(btn.style, {
-            position: 'fixed', bottom: '24px', right: '24px', zIndex: '999999',
-            width: '56px', height: '56px', borderRadius: '50%',
-            backgroundColor: '#8b5cf6', color: '#fff', border: 'none',
-            cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.3)', transition: 'transform 0.1s'
-        });
-        btn.onmousedown = () => btn.style.transform = 'scale(0.92)';
-        btn.onmouseup = () => btn.style.transform = 'scale(1)';
-        btn.onmouseleave = () => btn.style.transform = 'scale(1)';
+
         btn.onclick = showSetupModal;
-        document.body.appendChild(btn);
+
+        // Placed directly next to the "Thread actions" button
+        actionsBtn.parentElement.insertBefore(btn, actionsBtn);
     }
 
     // --- SPA WATCHER ---
