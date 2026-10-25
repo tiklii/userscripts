@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ReadOmni Chapters ZIP & EPUB Downloader
 // @namespace    https://github.com/tiklii/userscripts
-// @version      40
+// @version      41
 // @description  Download chapters from readomni
 // @author       tiklii
 // @match        https://app.readomni.com/*
@@ -233,7 +233,6 @@
                 return url;
             };
 
-            // Hook download clicks and SUPPRESS browser-level file dump to stop permission popups
             const origAnchorClick = HTMLAnchorElement.prototype.click;
             HTMLAnchorElement.prototype.click = function () {
                 const downloadAttr = this.getAttribute('download');
@@ -580,7 +579,7 @@
             html += `<a href="${dl.zip.url}" download="${dl.zip.name}" style="display: block; padding: 12px 30px; background-color: #10b981; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">📦 Save ZIP Archive</a>`;
         }
 
-        // Option B: Direct single-tap standalone glossary CSV download
+        // Option B: Standalone consolidated glossary CSV download
         if (dl.glossary) {
             html += `<a href="${dl.glossary.url}" download="${dl.glossary.name}" style="display: block; padding: 12px 30px; background-color: #0284c7; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">📁 Save Glossary (CSV)</a>`;
         }
@@ -616,7 +615,7 @@
         const dateStr = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
 
         if (state.logs && state.logs.length > 0) {
-            const logContent = "--- READOMNI DEBUG LOG v40 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
+            const logContent = "--- READOMNI DEBUG LOG v41 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
             dl.log = { url: URL.createObjectURL(new Blob([logContent], { type: 'text/plain' })), name: `readomni_debug_${new Date().getTime()}.txt` };
         }
 
@@ -653,7 +652,7 @@
             }
         }
 
-        // --- ZIP GENERATION (SAFE AUTO-DEDUPLICATING) ---
+        // --- ZIP GENERATION (CHAPTERS ONLY, NO GLOSSARY FOLDER) ---
         if (typeof zip !== 'undefined') {
             updateCancelButtonText("Compressing...");
             try {
@@ -695,51 +694,41 @@
                     }
                 }
 
-                // Load glossary files
-                let glossaryFiles = [];
-                if (state.includeGlossary) {
-                    glossaryFiles = await loadGlossaryFiles(state.runId);
-                }
-
-                // Add glossary folder to zip and prepare consolidated standalone download (Option B)
-                if (glossaryFiles && glossaryFiles.length > 0) {
-                    for (let gFile of glossaryFiles) {
-                        const safeName = gFile.name.replace(/[\/\\?%*:|"<>]/g, '_');
-                        await addZipEntry(`glossary/${safeName}`, gFile.content);
-                    }
-                    logDebug(state, `Added ${glossaryFiles.length} glossary file(s) into zip.`);
-
-                    // Create consolidated standalone CSV download
-                    let combinedCsvText = '';
-                    if (glossaryFiles.length === 1) {
-                        combinedCsvText = glossaryFiles[0].content;
-                    } else {
-                        const mergedRows = [];
-                        glossaryFiles.forEach((file, index) => {
-                            const lines = file.content.trim().split(/\r?\n/);
-                            if (index === 0) {
-                                mergedRows.push(...lines);
-                            } else {
-                                const contentLines = lines[0].toLowerCase().startsWith('raw,') ? lines.slice(1) : lines;
-                                mergedRows.push(...contentLines);
-                            }
-                        });
-                        combinedCsvText = mergedRows.join('\n');
-                    }
-
-                    if (combinedCsvText) {
-                        const safeBookTitle = state.threadName.replace(/[\/\\?%*:|"<>]/g, '_');
-                        dl.glossary = {
-                            url: URL.createObjectURL(new Blob([combinedCsvText], { type: 'text/csv;charset=utf-8;' })),
- name: `glossary-${safeBookTitle}.csv`
-                        };
-                    }
-                }
-
                 const blob = await zipWriter.close();
                 dl.zip = { url: URL.createObjectURL(blob), name: `${state.threadName}_${dateStr}.zip` };
             } catch (e) {
                 logDebug(state, `ZIP Compression Error: ${e.message}`);
+            }
+        }
+
+        // Prepare standalone glossary CSV download for the completion screen (Option B)
+        if (state.includeGlossary) {
+            const glossaryFiles = await loadGlossaryFiles(state.runId);
+            if (glossaryFiles && glossaryFiles.length > 0) {
+                let combinedCsvText = '';
+                if (glossaryFiles.length === 1) {
+                    combinedCsvText = glossaryFiles[0].content;
+                } else {
+                    const mergedRows = [];
+                    glossaryFiles.forEach((file, index) => {
+                        const lines = file.content.trim().split(/\r?\n/);
+                        if (index === 0) {
+                            mergedRows.push(...lines);
+                        } else {
+                            const contentLines = lines[0].toLowerCase().startsWith('raw,') ? lines.slice(1) : lines;
+                            mergedRows.push(...contentLines);
+                        }
+                    });
+                    combinedCsvText = mergedRows.join('\n');
+                }
+
+                if (combinedCsvText) {
+                    const safeBookTitle = state.threadName.replace(/[\/\\?%*:|"<>]/g, '_');
+                    dl.glossary = {
+                        url: URL.createObjectURL(new Blob([combinedCsvText], { type: 'text/csv;charset=utf-8;' })),
+ name: `glossary-${safeBookTitle}.csv`
+                    };
+                }
             }
         }
 
@@ -1063,7 +1052,7 @@
  includeGlossary: includeGlossary,
  threadName: customTitle, count: 1, retryCount: 0, logs: []
         };
-        logDebug(state, `--- NEW RUN INITIALIZED (V40 Sequential) ---`);
+        logDebug(state, `--- NEW RUN INITIALIZED (V41 Sequential) ---`);
         localStorage.setItem(STATE_KEY, JSON.stringify(state));
         const runUrl = new URL(firstLink.href, window.location.origin);
         runUrl.searchParams.set('ro_start_download', 'true');
@@ -1553,7 +1542,7 @@
  threadName: chosenTitle, count: 1, retryCount: 0, logs: [],
  queue: finalQueue, queueIndex: 0
                 };
-                logDebug(state, `--- NEW RUN INITIALIZED (V40 Selective) Total: ${finalQueue.length} ---`);
+                logDebug(state, `--- NEW RUN INITIALIZED (V41 Selective) Total: ${finalQueue.length} ---`);
                 localStorage.setItem(STATE_KEY, JSON.stringify(state));
 
                 const runUrl = new URL(finalQueue[0].url, window.location.origin);
