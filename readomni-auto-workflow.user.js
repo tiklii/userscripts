@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ReadOmni Auto-Workflow
 // @namespace    https://github.com/tiklii/userscripts
-// @version      2.0
-// @description  Automates ReadOmni empty thread creation, multi-file glossary importing, and renaming with guardrails, HUD, and live cancellation.
+// @version      2.1
+// @description  Automates ReadOmni empty thread creation, multi-file glossary importing, and renaming with native UI integration, mobile drawer support, and guardrails.
 // @author       tiklii
 // @match        https://app.readomni.com/*
 // @grant        none
@@ -83,17 +83,22 @@
         }
     }
 
-    // Searches strictly for a Base UI menuitem by visible text
-    async function findMenuItem(textFilter, timeout = 8000) {
+    // Searches for an action item across Desktop Dropdowns ([role="menuitem"]) and Mobile Drawers ([data-slot="drawer-content"] button)
+    async function findActionItem(textFilter, timeout = 8000) {
         const endTime = Date.now() + timeout;
         while (Date.now() < endTime) {
             checkAbort();
-            const items = Array.from(document.querySelectorAll('[role="menuitem"]'));
-            const target = items.find(el => el.textContent.trim().includes(textFilter));
+            const candidates = Array.from(document.querySelectorAll(
+                '[role="menuitem"], [data-slot="drawer-content"] button, [data-slot="drawer-body"] button, [role="dialog"] button'
+            ));
+            const target = candidates.find(el => {
+                const txt = el.textContent.trim();
+                return txt.includes(textFilter) && !el.getAttribute('aria-label')?.includes('Close');
+            });
             if (target) return target;
             await sleep(200);
         }
-        throw new Error(`Menu item containing "${textFilter}" not found`);
+        throw new Error(`Action item containing "${textFilter}" not found`);
     }
 
     // Forces React to register value changes in inputs/textareas
@@ -113,7 +118,7 @@
         element.dispatchEvent(event);
     }
 
-    // Single-event activation supporting Base UI, Radix, and React synthetic events
+    // Single-event activation supporting Base UI, Radix, Drawers, and React synthetic events
     function reactClick(element) {
         if (!element) return;
         element.focus();
@@ -129,14 +134,12 @@
             element.dispatchEvent(new MouseEvent('mouseup', mouseOpts));
         }
 
-        // Single click only: .click() fires native action and trusted synthetic click
         if (typeof element.click === 'function') {
             element.click();
         } else {
             element.dispatchEvent(new MouseEvent('click', mouseOpts));
         }
 
-        // Keyboard trigger for Base UI menuitems
         if (element.getAttribute('role') === 'menuitem') {
             element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
             element.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
@@ -149,8 +152,7 @@
 
         for (let i = 0; i < files.length; i++) {
             let text = await files[i].text();
-            // Remove UTF-8 BOM if present
-            text = text.replace(/^\uFEFF/, '');
+            text = text.replace(/^\uFEFF/, ''); // Strip UTF-8 BOM if present
             let lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
             if (lines.length > 0 && isHeader(lines[0])) {
@@ -201,40 +203,44 @@
             return;
         }
 
+        const isMobile = window.innerWidth < 768;
+
         if (!banner) {
             banner = document.createElement('div');
             banner.id = 'ro-workflow-status-banner';
             Object.assign(banner.style, {
                 position: 'fixed',
-                top: '16px',
+                top: isMobile ? '64px' : '16px',
                 left: '50%',
                 transform: 'translateX(-50%)',
                           zIndex: '9999999',
                           display: 'flex',
                           alignItems: 'center',
                           gap: '10px',
-                          padding: '8px 16px',
+                          padding: '6px 14px',
                           backgroundColor: 'rgba(24, 24, 27, 0.95)',
                           color: '#fafafa',
                           borderRadius: '9999px',
                           boxShadow: '0 10px 25px -5px rgba(0,0,0,0.4), 0 8px 10px -6px rgba(0,0,0,0.3)',
-                          fontSize: '13px',
+                          fontSize: '12.5px',
                           fontWeight: '500',
                           border: '1px solid rgba(255, 255, 255, 0.15)',
                           backdropFilter: 'blur(8px)',
-                          userSelect: 'none'
+                          userSelect: 'none',
+                          maxWidth: 'calc(100vw - 32px)',
+                          whiteSpace: 'nowrap'
             });
 
-            // Modern CSS spinner ring
             const spinner = document.createElement('span');
             spinner.id = 'ro-status-spinner';
             Object.assign(spinner.style, {
-                width: '14px',
-                height: '14px',
+                width: '13px',
+                height: '13px',
                 border: '2px solid rgba(255, 255, 255, 0.25)',
                           borderTopColor: '#ffffff',
                           borderRadius: '50%',
                           display: 'inline-block',
+                          flexShrink: '0',
                           animation: 'ro-spin 0.8s linear infinite'
             });
 
@@ -249,6 +255,8 @@
 
             const msgSpan = document.createElement('span');
             msgSpan.id = 'ro-status-msg';
+            msgSpan.style.overflow = 'hidden';
+            msgSpan.style.textOverflow = 'ellipsis';
             banner.appendChild(msgSpan);
 
             const cancelBtn = document.createElement('button');
@@ -263,6 +271,7 @@
                 fontSize: '11px',
                 fontWeight: '600',
                 cursor: 'pointer',
+                flexShrink: '0',
                 marginLeft: '4px'
             });
 
@@ -339,10 +348,10 @@
             const nextName = sessionStorage.getItem(NAME_KEY);
             const lockedThreadId = sessionStorage.getItem(TARGET_THREAD_ID_KEY);
 
-            // GUARDRAIL: Verify thread ID before modifying
+            // GUARDRAIL: Strict Thread ID check to never touch unrelated novels
             const currentThreadId = window.location.pathname.match(/\/thread\/([a-zA-Z0-9-]+)/)?.[1];
             if (lockedThreadId && currentThreadId && currentThreadId !== lockedThreadId) {
-                console.warn(`[ReadOmni-Workflow] SAFETY ABORT: Opened thread (${currentThreadId}) !== target thread (${lockedThreadId}). Aborting to protect existing thread data.`);
+                console.warn(`[ReadOmni-Workflow] SAFETY ABORT: Opened thread (${currentThreadId}) !== target thread (${lockedThreadId}). Aborting.`);
                 clearWorkflowState();
                 return;
             }
@@ -364,7 +373,7 @@
                 sessionStorage.setItem(STATE_KEY, 'STEP_GLOSSARY_TAB');
                 reactClick(emptyThreadBtn);
 
-                // Prevent any accidental double-clicks
+                // Prevent duplicate click submission
                 emptyThreadBtn.disabled = true;
                 emptyThreadBtn.style.pointerEvents = 'none';
 
@@ -378,7 +387,7 @@
                     throw new Error("Navigation to created thread timed out.");
                 }
 
-                // LOCK WORKFLOW TO CREATED THREAD ID
+                // Lock workflow to created thread ID
                 const createdId = window.location.pathname.match(/\/thread\/([a-zA-Z0-9-]+)/)?.[1];
                 if (createdId) {
                     sessionStorage.setItem(TARGET_THREAD_ID_KEY, createdId);
@@ -389,7 +398,7 @@
                 await sleepWithAbort(400);
             }
 
-            // STEP 2: Navigate to Glossary Tab on Thread Page
+            // STEP 2: Navigate to Glossary View on Thread Page (Desktop tabs & Mobile cards)
             if (state === 'STEP_GLOSSARY_TAB') {
                 updateStatusBanner(`Opening Glossary for "${nextName}"...`);
                 await waitForElement('h1', null, false, 15000);
@@ -398,16 +407,20 @@
                 document.querySelector('button[role="tab"][data-active]')?.textContent.includes('Glossary');
 
                 if (!isAlreadyGlossary) {
-                    const glossaryTab = Array.from(document.querySelectorAll('button[role="tab"], button'))
-                    .find(b => b.textContent.trim().includes('Glossary'));
+                    // Mobile navigation uses card link a[href*="tab=glossary"], Desktop uses tab button
+                    const glossaryTarget = document.querySelector('a[href*="tab=glossary"]') ||
+                    Array.from(document.querySelectorAll('button[role="tab"], button, a'))
+                    .find(el => el.textContent.trim().includes('Glossary'));
 
-                    if (glossaryTab) {
-                        reactClick(glossaryTab);
+                    if (glossaryTarget) {
+                        reactClick(glossaryTarget);
                     } else {
-                        const tabBtn = await waitForElement('button[role="tab"], button', 'Glossary', false, 8000);
-                        reactClick(tabBtn);
+                        const target = await waitForElement('a[href*="tab=glossary"], button[role="tab"], button, a', 'Glossary', false, 8000);
+                        reactClick(target);
                     }
-                    await sleepWithAbort(800);
+
+                    // Wait for glossary controls to appear
+                    await waitForElement('button[aria-label="Glossary tools"], button[aria-label="More actions"], [data-slot="empty-content"] button', null, false, 10000);
                 }
 
                 sessionStorage.setItem(STATE_KEY, 'STEP_IMPORT_GLOSSARY');
@@ -416,7 +429,7 @@
 
             // STEP 3: Import Glossary CSVs Sequentially
             if (state === 'STEP_IMPORT_GLOSSARY') {
-                await waitForElement('button[aria-label="More actions"], [data-slot="empty-content"] button', null, false, 10000);
+                await waitForElement('button[aria-label="Glossary tools"], button[aria-label="More actions"], [data-slot="empty-content"] button', null, false, 10000);
 
                 for (let i = 0; i < csvList.length; i++) {
                     checkAbort();
@@ -425,31 +438,47 @@
                     let bulkTextarea = document.querySelector('textarea[name="input"]');
 
                     if (!bulkTextarea) {
-                        const tabPanel = document.querySelector('[role="tabpanel"]') || document;
-                        let moreActionsBtn = tabPanel.querySelector('button[aria-label="More actions"]');
+                        // Check if the empty-state "Import a CSV" button is directly visible (quickest path on new threads)
+                        const emptyImportBtn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === 'Import a CSV');
 
-                        if (!moreActionsBtn) {
-                            moreActionsBtn = Array.from(tabPanel.querySelectorAll('button')).find(b => {
-                                return b.querySelector('svg.lucide-ellipsis, svg.lucide-more-horizontal') &&
-                                !b.getAttribute('aria-label')?.includes('Thread');
-                            });
+                        if (emptyImportBtn) {
+                            console.log("[ReadOmni-Workflow] [STEP 3] Clicking empty-state 'Import a CSV' button...");
+                            reactClick(emptyImportBtn);
+                            await sleepWithAbort(500);
+                        } else {
+                            // Find the 3-dot tools button: "Glossary tools" (Mobile) or "More actions" (Desktop)
+                            let moreActionsBtn = document.querySelector('button[aria-label="Glossary tools"]') ||
+                            document.querySelector('button[aria-label="More actions"]');
+
+                            if (!moreActionsBtn) {
+                                const tabPanel = document.querySelector('[role="tabpanel"]') || document;
+                                moreActionsBtn = Array.from(tabPanel.querySelectorAll('button')).find(b => {
+                                    return b.querySelector('svg.lucide-ellipsis, svg.lucide-more-horizontal') &&
+                                    !b.getAttribute('aria-label')?.includes('Thread');
+                                });
+                            }
+
+                            if (!moreActionsBtn) {
+                                moreActionsBtn = await waitForElement(
+                                    'button[aria-label="Glossary tools"], button[aria-label="More actions"], button:has(svg.lucide-more-horizontal)',
+                                                                      null, false, 8000
+                                );
+                            }
+
+                            console.log("[ReadOmni-Workflow] [STEP 3] Opening glossary tools menu...");
+                            reactClick(moreActionsBtn);
+                            await sleepWithAbort(500);
+
+                            console.log("[ReadOmni-Workflow] [STEP 3] Selecting 'Import CSV'...");
+                            const importItem = await findActionItem('Import CSV', 6000);
+                            reactClick(importItem);
+                            await sleepWithAbort(600);
                         }
-
-                        if (!moreActionsBtn) {
-                            moreActionsBtn = await waitForElement('button[aria-label="More actions"]', null, false, 8000);
-                        }
-
-                        reactClick(moreActionsBtn);
-                        await sleepWithAbort(400);
-
-                        const importMenuItem = await findMenuItem('Import CSV', 6000);
-                        reactClick(importMenuItem);
-                        await sleepWithAbort(500);
 
                         bulkTextarea = await waitForElement('textarea[name="input"]', null, false, 8000);
                     }
 
-                    // Paste terms for file i
+                    // Paste CSV terms for this file
                     setReactInputValue(bulkTextarea, csvList[i]);
                     await sleepWithAbort(250);
 
@@ -463,33 +492,41 @@
                 }
 
                 console.log("[ReadOmni-Workflow] [STEP 3] All glossary files successfully imported!");
+
+                // CRITICAL: Update state to STEP_RENAME_THREAD immediately so any reload/observer tick never re-runs STEP 3
                 sessionStorage.setItem(STATE_KEY, 'STEP_RENAME_THREAD');
                 state = 'STEP_RENAME_THREAD';
-            }
 
-            // STEP 4: Rename Thread to target name & redirect
-            if (state === 'STEP_RENAME_THREAD') {
-                updateStatusBanner(`Renaming thread to "${nextName}"...`);
-
-                let threadMenuBtn = document.querySelector('button[aria-label="Thread actions"]');
-                if (!threadMenuBtn) {
-                    const h1 = document.querySelector('h1');
-                    const header = h1?.closest('header');
-                    if (header) {
-                        threadMenuBtn = header.querySelector('button[aria-label="Thread actions"]') ||
-                        header.querySelector('button[aria-haspopup="menu"]');
+                // Return from Glossary subpage on mobile only (Desktop already has the header visible)
+                const isMobile = window.innerWidth < 768;
+                if (isMobile && window.location.search.includes('tab=glossary')) {
+                    updateStatusBanner("Returning to thread view...");
+                    console.log("[ReadOmni-Workflow] Mobile: navigating back from Glossary subpage...");
+                    const mobileBackBtn = document.querySelector('header button[aria-label="Back"]');
+                    if (mobileBackBtn) {
+                        reactClick(mobileBackBtn);
+                        await sleepWithAbort(600);
                     }
                 }
-                if (!threadMenuBtn) {
-                    threadMenuBtn = await waitForElement('button[aria-label="Thread actions"]', null, false, 6000);
-                }
 
+                // Wait for the Thread actions button to be present
+                await waitForElement('button[aria-label="Thread actions"]', null, false, 10000);
+            }
+
+            // STEP 4: Rename Thread, Save, Click "+", and Select "Translate a URL or text"
+            if (state === 'STEP_RENAME_THREAD') {
+                updateStatusBanner(`Renaming thread to "${nextName}"...`);
+                console.log(`[ReadOmni-Workflow] [STEP 4] Renaming Thread to: "${nextName}"...`);
+
+                const threadMenuBtn = await waitForElement('button[aria-label="Thread actions"]', null, false, 10000);
                 reactClick(threadMenuBtn);
-                await sleepWithAbort(400);
-
-                const renameItem = await findMenuItem('Rename', 6000);
-                reactClick(renameItem);
                 await sleepWithAbort(500);
+
+                // Find and click "Rename, tags and note"
+                console.log("[ReadOmni-Workflow] [STEP 4] Clicking 'Rename, tags and note'...");
+                const renameItem = await findActionItem('Rename', 6000);
+                reactClick(renameItem);
+                await sleepWithAbort(600);
 
                 const titleInput = await waitForElement('input[name="title"]', null, false, 6000);
                 setReactInputValue(titleInput, nextName);
@@ -497,20 +534,45 @@
 
                 const saveBtn = await waitForElement('button[type="submit"]', 'Save', false, 5000);
                 reactClick(saveBtn);
+                console.log("[ReadOmni-Workflow] [STEP 4] New title saved.");
 
                 // Wait for the rename dialog to close
                 await waitForElementToDisappear('input[name="title"]', 6000);
+                await sleepWithAbort(500);
 
-                const finalThreadId = window.location.pathname.match(/\/thread\/([a-zA-Z0-9-]+)/)?.[1];
-                updateStatusBanner(`✅ Finished! Opening translate...`);
+                // Switch to Translation tab on desktop if not active
+                const isDesktop = window.innerWidth >= 768;
+                if (isDesktop) {
+                    const translationTab = Array.from(document.querySelectorAll('button[role="tab"]'))
+                    .find(b => b.textContent.trim().includes('Translation'));
+                    if (translationTab && !translationTab.hasAttribute('data-active')) {
+                        reactClick(translationTab);
+                        await sleepWithAbort(500);
+                    }
+                }
+
+                // Click "+" (Add translations) button on the thread page
+                updateStatusBanner("Opening translation options (+)...");
+                console.log("[ReadOmni-Workflow] [STEP 4] Clicking '+' (Add translations) button...");
+                const addTranslationsBtn = await waitForElement('button[aria-label="Add translations"], button:has(svg.lucide-plus)', null, false, 8000);
+                reactClick(addTranslationsBtn);
                 await sleepWithAbort(600);
+
+                // Click "Translate a URL or text"
+                updateStatusBanner("Opening translate...");
+                console.log("[ReadOmni-Workflow] [STEP 4] Clicking 'Translate a URL or text'...");
+                const translateUrlOption = await findActionItem('Translate a URL or text', 6000);
+                reactClick(translateUrlOption);
+
+                const finalThreadId = sessionStorage.getItem(TARGET_THREAD_ID_KEY) || window.location.pathname.match(/\/thread\/([a-zA-Z0-9-]+)/)?.[1];
+                updateStatusBanner(`✅ Finished!`);
 
                 clearWorkflowState();
 
-                if (finalThreadId) {
+                // Fallback direct URL navigation if not redirected within 1.5s
+                await sleep(1500);
+                if (finalThreadId && !window.location.search.includes('thread=')) {
                     window.location.href = `/?thread=${finalThreadId}`;
-                } else {
-                    window.location.href = `/`;
                 }
             }
 
@@ -527,7 +589,7 @@
         }
     }
 
-    // --- UI INJECTION & TRIGGER ---
+    // --- SEAMLESS UI INJECTION & TRIGGER ---
 
     function triggerFilePickerAndStart() {
         const fileInput = document.createElement('input');
@@ -556,20 +618,50 @@
 
         if (document.getElementById('ro-workflow-btn')) return;
 
+        const isMobile = window.innerWidth < 768;
+
         const btn = document.createElement('button');
         btn.id = 'ro-workflow-btn';
-        btn.innerHTML = '🚀<span class="hidden sm:inline ml-2">Workflow</span>';
-        btn.className = "inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-[color,box-shadow] disabled:pointer-events-none disabled:opacity-50 ring-ring/10 dark:ring-ring/20 outline-ring/50 focus-visible:ring-4 focus-visible:outline-1 bg-primary text-primary-foreground shadow-sm hover:bg-primary/90 h-9 px-3 shrink-0 cursor-pointer";
-        btn.type = "button";
+        btn.type = 'button';
         btn.onclick = triggerFilePickerAndStart;
+
+        if (isMobile) {
+            btn.innerHTML = '🚀<span class="ml-1 text-xs font-semibold">Workflow</span>';
+            btn.className = "inline-flex items-center justify-center whitespace-nowrap rounded-md text-xs font-medium border border-border/80 bg-background/80 shadow-xs hover:bg-accent text-foreground h-8 px-2.5 shrink-0";
+
+            const mobileHeaderActions = document.querySelector('header .flex-shrink-0.flex-row.items-center');
+            if (mobileHeaderActions) {
+                mobileHeaderActions.insertBefore(btn, mobileHeaderActions.firstChild);
+                return;
+            }
+        } else {
+            btn.innerHTML = '🚀<span class="ml-1.5 font-medium">Workflow</span>';
+            btn.className = "inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-[color,box-shadow] border border-border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground h-9 px-3 shrink-0";
+
+            if (isLibrary) {
+                const newThreadBtn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('New thread'));
+                if (newThreadBtn && newThreadBtn.parentElement) {
+                    newThreadBtn.parentElement.insertBefore(btn, newThreadBtn);
+                    return;
+                }
+            }
+
+            if (isCleanHome) {
+                const modelSelector = document.querySelector('button[aria-label*="Translation settings"]');
+                if (modelSelector && modelSelector.parentElement) {
+                    modelSelector.parentElement.insertBefore(btn, modelSelector.nextSibling);
+                    btn.classList.add('h-8', 'text-xs', 'px-2.5');
+                    return;
+                }
+            }
+        }
 
         Object.assign(btn.style, {
             position: 'fixed',
-            top: '12px',
-            right: '24px',
-            zIndex: '999999'
+            top: isMobile ? '10px' : '14px',
+            right: isMobile ? '56px' : '24px',
+            zIndex: '40'
         });
-
         document.body.appendChild(btn);
     }
 
@@ -588,6 +680,8 @@
                 if (!isRunning && sessionStorage.getItem(STATE_KEY)) {
                     doWorkflow();
                 }
+            } else {
+                injectTriggerButton();
             }
         }, 150);
     }).observe(document, { subtree: true, childList: true });
