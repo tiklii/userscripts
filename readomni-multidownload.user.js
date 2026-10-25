@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ReadOmni Chapters ZIP & EPUB Downloader
 // @namespace    https://github.com/tiklii/userscripts
-// @version      39
+// @version      40
 // @description  Download chapters from readomni
 // @author       tiklii
 // @match        https://app.readomni.com/*
@@ -215,7 +215,7 @@
         } catch (e) { }
     }
 
-    // --- GLOSSARY EXPORT INTERCEPTOR (DESKTOP & MOBILE COMPATIBLE) ---
+    // --- GLOSSARY EXPORT INTERCEPTOR (OPTION A: SUPPRESS BROWSER MULTI-DOWNLOAD PROMPTS) ---
     async function exportGlossary(threadName, runId) {
         try {
             let capturedDownloads = [];
@@ -233,6 +233,7 @@
                 return url;
             };
 
+            // Hook download clicks and SUPPRESS browser-level file dump to stop permission popups
             const origAnchorClick = HTMLAnchorElement.prototype.click;
             HTMLAnchorElement.prototype.click = function () {
                 const downloadAttr = this.getAttribute('download');
@@ -250,10 +251,9 @@
                                 name: finalName,
                                 href: href
                             });
-                            return origAnchorClick.apply(this, arguments);
-                        } else {
-                            return;
                         }
+                        // Suppress browser filesystem dump to eliminate the "Allow multiple downloads" prompt
+                        return;
                     }
                 }
                 return origAnchorClick.apply(this, arguments);
@@ -294,7 +294,6 @@
                 if (toolsBtn) {
                     omniClick(toolsBtn);
 
-                    // Wait for either desktop dropdown menu or mobile drawer dialog
                     let exportBtn = null;
                     for (let i = 0; i < 30; i++) {
                         const candidates = Array.from(document.querySelectorAll('[role="menuitem"], [data-slot="drawer-content"] button, [data-drawer-content] button, div[role="dialog"] button, button'));
@@ -310,7 +309,6 @@
                     if (exportBtn) {
                         omniClick(exportBtn);
 
-                        // Wait for download or clipboard copy
                         for (let i = 0; i < 150; i++) {
                             if (capturedDownloads.length > 0) {
                                 await sleep(1000);
@@ -379,7 +377,7 @@
                     await saveGlossaryFiles(runId, finalGlossaryFiles);
                 }
 
-                // 6. Return back to Translation / Chapters view (Desktop Tab or Mobile Back Button)
+                // 6. Return to Translation / Chapters view
                 const transTab = Array.from(document.querySelectorAll('button[role="tab"]')).find(b => b.textContent.trim().startsWith('Translation'));
                 const mobileBackBtn = document.querySelector('header button[aria-label="Back"]');
 
@@ -582,6 +580,11 @@
             html += `<a href="${dl.zip.url}" download="${dl.zip.name}" style="display: block; padding: 12px 30px; background-color: #10b981; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">📦 Save ZIP Archive</a>`;
         }
 
+        // Option B: Direct single-tap standalone glossary CSV download
+        if (dl.glossary) {
+            html += `<a href="${dl.glossary.url}" download="${dl.glossary.name}" style="display: block; padding: 12px 30px; background-color: #0284c7; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">📁 Save Glossary (CSV)</a>`;
+        }
+
         if (dl.log) {
             html += `<a href="${dl.log.url}" download="${dl.log.name}" style="display: block; padding: 12px 30px; background-color: #4b5563; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">🛠 Save Debug Log</a>`;
         }
@@ -613,7 +616,7 @@
         const dateStr = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
 
         if (state.logs && state.logs.length > 0) {
-            const logContent = "--- READOMNI DEBUG LOG v39 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
+            const logContent = "--- READOMNI DEBUG LOG v40 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
             dl.log = { url: URL.createObjectURL(new Blob([logContent], { type: 'text/plain' })), name: `readomni_debug_${new Date().getTime()}.txt` };
         }
 
@@ -692,15 +695,44 @@
                     }
                 }
 
-                // Add glossary folder to zip if enabled
+                // Load glossary files
+                let glossaryFiles = [];
                 if (state.includeGlossary) {
-                    const glossaryFiles = await loadGlossaryFiles(state.runId);
-                    if (glossaryFiles && glossaryFiles.length > 0) {
-                        for (let gFile of glossaryFiles) {
-                            const safeName = gFile.name.replace(/[\/\\?%*:|"<>]/g, '_');
-                            await addZipEntry(`glossary/${safeName}`, gFile.content);
-                        }
-                        logDebug(state, `Added ${glossaryFiles.length} glossary file(s) into zip.`);
+                    glossaryFiles = await loadGlossaryFiles(state.runId);
+                }
+
+                // Add glossary folder to zip and prepare consolidated standalone download (Option B)
+                if (glossaryFiles && glossaryFiles.length > 0) {
+                    for (let gFile of glossaryFiles) {
+                        const safeName = gFile.name.replace(/[\/\\?%*:|"<>]/g, '_');
+                        await addZipEntry(`glossary/${safeName}`, gFile.content);
+                    }
+                    logDebug(state, `Added ${glossaryFiles.length} glossary file(s) into zip.`);
+
+                    // Create consolidated standalone CSV download
+                    let combinedCsvText = '';
+                    if (glossaryFiles.length === 1) {
+                        combinedCsvText = glossaryFiles[0].content;
+                    } else {
+                        const mergedRows = [];
+                        glossaryFiles.forEach((file, index) => {
+                            const lines = file.content.trim().split(/\r?\n/);
+                            if (index === 0) {
+                                mergedRows.push(...lines);
+                            } else {
+                                const contentLines = lines[0].toLowerCase().startsWith('raw,') ? lines.slice(1) : lines;
+                                mergedRows.push(...contentLines);
+                            }
+                        });
+                        combinedCsvText = mergedRows.join('\n');
+                    }
+
+                    if (combinedCsvText) {
+                        const safeBookTitle = state.threadName.replace(/[\/\\?%*:|"<>]/g, '_');
+                        dl.glossary = {
+                            url: URL.createObjectURL(new Blob([combinedCsvText], { type: 'text/csv;charset=utf-8;' })),
+ name: `glossary-${safeBookTitle}.csv`
+                        };
                     }
                 }
 
@@ -804,7 +836,7 @@
                 state = JSON.parse(freshStr);
                 if (!state.active) return;
 
-                // Save chapter data directly to IndexedDB (completely bypasses localStorage quota)
+                // Save chapter data directly to IndexedDB
                 await appendChapter(state.runId, {
                     rawTitle: rawTitleText,
                     rawChapterTitle: rawChapterTitle,
@@ -888,7 +920,6 @@
                 const nextHref = prevBtn.getAttribute('href');
                 omniClick(prevBtn);
 
-                // Shortened watchdog timeout: 1.5s max before direct href navigation
                 let contentChanged = false;
                 for (let i = 0; i < 15; i++) {
                     await sleep(100);
@@ -1032,7 +1063,7 @@
  includeGlossary: includeGlossary,
  threadName: customTitle, count: 1, retryCount: 0, logs: []
         };
-        logDebug(state, `--- NEW RUN INITIALIZED (V39 Sequential) ---`);
+        logDebug(state, `--- NEW RUN INITIALIZED (V40 Sequential) ---`);
         localStorage.setItem(STATE_KEY, JSON.stringify(state));
         const runUrl = new URL(firstLink.href, window.location.origin);
         runUrl.searchParams.set('ro_start_download', 'true');
@@ -1522,7 +1553,7 @@
  threadName: chosenTitle, count: 1, retryCount: 0, logs: [],
  queue: finalQueue, queueIndex: 0
                 };
-                logDebug(state, `--- NEW RUN INITIALIZED (V39 Selective) Total: ${finalQueue.length} ---`);
+                logDebug(state, `--- NEW RUN INITIALIZED (V40 Selective) Total: ${finalQueue.length} ---`);
                 localStorage.setItem(STATE_KEY, JSON.stringify(state));
 
                 const runUrl = new URL(finalQueue[0].url, window.location.origin);
@@ -1578,7 +1609,6 @@
     function injectStartButton() {
         if (document.getElementById('ro-bulk-btn')) return;
 
-        // Find the native thread header actions ("...") button
         const actionsBtn = document.querySelector('header button[aria-label="Thread actions"]');
         if (!actionsBtn || !actionsBtn.parentElement) return;
 
@@ -1588,7 +1618,6 @@
         btn.title = 'Download Book (EPUB & ZIP)';
         btn.setAttribute('aria-label', 'Download Book');
 
-        // Inherits exact classes from ReadOmni's native header action button
         btn.className = actionsBtn.className;
         btn.style.display = 'inline-flex';
         btn.style.alignItems = 'center';
@@ -1605,7 +1634,6 @@
 
         btn.onclick = showSetupModal;
 
-        // Placed directly next to the "Thread actions" button
         actionsBtn.parentElement.insertBefore(btn, actionsBtn);
     }
 
