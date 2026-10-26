@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ReadOmni Chapters ZIP & EPUB Downloader
 // @namespace    https://github.com/tiklii/userscripts
-// @version      41
+// @version      42
 // @description  Download chapters from readomni
 // @author       tiklii
 // @match        https://app.readomni.com/*
@@ -579,7 +579,6 @@
             html += `<a href="${dl.zip.url}" download="${dl.zip.name}" style="display: block; padding: 12px 30px; background-color: #10b981; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">📦 Save ZIP Archive</a>`;
         }
 
-        // Option B: Standalone consolidated glossary CSV download
         if (dl.glossary) {
             html += `<a href="${dl.glossary.url}" download="${dl.glossary.name}" style="display: block; padding: 12px 30px; background-color: #0284c7; color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; width: 80%; text-align: center; max-width: 350px;">📁 Save Glossary (CSV)</a>`;
         }
@@ -615,7 +614,7 @@
         const dateStr = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
 
         if (state.logs && state.logs.length > 0) {
-            const logContent = "--- READOMNI DEBUG LOG v41 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
+            const logContent = "--- READOMNI DEBUG LOG v42 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
             dl.log = { url: URL.createObjectURL(new Blob([logContent], { type: 'text/plain' })), name: `readomni_debug_${new Date().getTime()}.txt` };
         }
 
@@ -626,11 +625,12 @@
 
         let finalFiles = state.mode === 'selective' ? [...loadedChapters] : [...loadedChapters].reverse();
 
+        // Check and ignore the sample text chapter on the very first (oldest) chapter
         if (finalFiles.length > 0) {
             const firstChap = finalFiles[0];
-            const rawCheckString = (firstChap.rawTitle || "") + " " + (firstChap.rawContent || "");
-            if (rawCheckString.includes("第99887章") || rawCheckString.includes("牌位")) {
-                logDebug(state, "Found placeholder chapter. Removing.");
+            const rawCheckString = (firstChap.rawChapterTitle || "") + " " + (firstChap.rawContent || "") + " " + (firstChap.rawTitle || "");
+            if (rawCheckString.includes("第十五章 死事") || rawCheckString.includes("第99887章") || rawCheckString.includes("牌位")) {
+                logDebug(state, "Found sample text chapter ('第十五章 死事'). Removing from start.");
                 finalFiles.shift();
             }
         }
@@ -701,7 +701,7 @@
             }
         }
 
-        // Prepare standalone glossary CSV download for the completion screen (Option B)
+        // Prepare standalone glossary CSV download for the completion screen
         if (state.includeGlossary) {
             const glossaryFiles = await loadGlossaryFiles(state.runId);
             if (glossaryFiles && glossaryFiles.length > 0) {
@@ -1052,7 +1052,7 @@
  includeGlossary: includeGlossary,
  threadName: customTitle, count: 1, retryCount: 0, logs: []
         };
-        logDebug(state, `--- NEW RUN INITIALIZED (V41 Sequential) ---`);
+        logDebug(state, `--- NEW RUN INITIALIZED (V42 Sequential) ---`);
         localStorage.setItem(STATE_KEY, JSON.stringify(state));
         const runUrl = new URL(firstLink.href, window.location.origin);
         runUrl.searchParams.set('ro_start_download', 'true');
@@ -1207,10 +1207,6 @@
 
             if (isDescending) {
                 rawList.reverse();
-            }
-
-            if (rawList.length > 0 && (rawList[0].title.includes("99887") || rawList[0].title.includes("牌位"))) {
-                rawList.shift();
             }
 
             showSelectiveUI(rawList, threadName, window.location.href, includeGlossary);
@@ -1542,7 +1538,7 @@
  threadName: chosenTitle, count: 1, retryCount: 0, logs: [],
  queue: finalQueue, queueIndex: 0
                 };
-                logDebug(state, `--- NEW RUN INITIALIZED (V41 Selective) Total: ${finalQueue.length} ---`);
+                logDebug(state, `--- NEW RUN INITIALIZED (V42 Selective) Total: ${finalQueue.length} ---`);
                 localStorage.setItem(STATE_KEY, JSON.stringify(state));
 
                 const runUrl = new URL(finalQueue[0].url, window.location.origin);
