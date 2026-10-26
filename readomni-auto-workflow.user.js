@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ReadOmni Auto-Workflow
 // @namespace    https://github.com/tiklii/userscripts
-// @version      2.3
-// @description  Automates ReadOmni empty thread creation, chunked multi-file glossary importing, and renaming with seamless in-page UI integration, mobile drawer support, and guardrails.
+// @version      2.4
+// @description  Automates ReadOmni thread initialization via sample text, chunked multi-file glossary importing (4000 terms max), and renaming with guardrails and live controls.
 // @author       tiklii
 // @match        https://app.readomni.com/*
 // @grant        none
@@ -11,6 +11,8 @@
 (function() {
     'use strict';
 
+    const SAMPLE_TEXT = `第十五章 死事\n\n那个莫名其妙的世界，有自己的运行规则，死板、单调，重复，哪怕偶尔出现一些令人意想不到的情节，可如果往深里望去，依然还是那些陈年旧事的翻版，无论阳光底还是星空下，都没有新鲜事，阴谋与背叛里尽是令人作呕的腐朽味道。\n\n对这个世界依然充满期待、希望，依然有勇气在阳光里直视黑暗，在星空里仰望道德的年轻人，对这样的世界自然无法生出任何好感，比如唐三十六，但在汶水唐家那位喜欢无声而笑的二爷眼里，在天海家那些老人的眼里，在周通的眼里，年轻人的想法总是那样的幼稚可笑。\n\n人生不能是一场扮家家酒——陈长生甚至能够想到，从京都被押回汶水的旅途上，唐三十六会听到多少句类似的话。他也能够想像得到，这时候在东御神将府，满脸肃容、一身正气的徐世绩，在满桌菜肴撤下后，会对着夫人振振有辞地说，自己这个父亲做任何事情都是为了女儿，如果不是我当机立断、力挽狂澜，圣后娘娘死后，你以为她还能在圣女的位置上安稳地坐下去？`;
+
     // State Keys for SessionStorage
     const STATE_KEY = 'ro_wf_state';
     const CSV_LIST_KEY = 'ro_wf_csv_list';
@@ -18,7 +20,7 @@
     const TARGET_THREAD_ID_KEY = 'ro_wf_target_thread_id';
     const TIMESTAMP_KEY = 'ro_wf_timestamp';
     const MAX_WORKFLOW_AGE_MS = 5 * 60 * 1000; // 5 minute expiration
-    const GLOSSARY_CHUNK_SIZE = 4000; // ReadOmni limit is 5000; chunk at 4000 for safety
+    const GLOSSARY_CHUNK_SIZE = 4000; // Chunk threshold for large glossaries
 
     let isRunning = false;
     let isAborted = false;
@@ -316,12 +318,12 @@
             sessionStorage.setItem(CSV_LIST_KEY, JSON.stringify(csvChunks));
             sessionStorage.setItem(NAME_KEY, nextName);
             sessionStorage.setItem(TIMESTAMP_KEY, Date.now().toString());
-            sessionStorage.setItem(STATE_KEY, 'STEP_CREATE_THREAD');
+            sessionStorage.setItem(STATE_KEY, 'STEP_SUBMIT_SAMPLE');
 
-            updateStatusBanner(`Creating empty thread for "${nextName}"...`);
+            updateStatusBanner(`Submitting sample text for "${nextName}"...`);
 
-            if (window.location.pathname !== '/library') {
-                window.location.href = '/library';
+            if (window.location.pathname !== '/' || window.location.search !== '') {
+                window.location.href = '/';
             } else {
                 doWorkflow();
             }
@@ -353,7 +355,7 @@
             const nextName = sessionStorage.getItem(NAME_KEY);
             const lockedThreadId = sessionStorage.getItem(TARGET_THREAD_ID_KEY);
 
-            // Guardrail: Strict Thread ID check
+            // Guardrail: Strict Thread ID check once thread ID is established
             const currentThreadId = window.location.pathname.match(/\/thread\/([a-zA-Z0-9-]+)/)?.[1];
             if (lockedThreadId && currentThreadId && currentThreadId !== lockedThreadId) {
                 console.warn(`[ReadOmni-Workflow] SAFETY ABORT: Opened thread (${currentThreadId}) !== target thread (${lockedThreadId}). Aborting.`);
@@ -361,40 +363,59 @@
                 return;
             }
 
-            // STEP 1: Create an Empty Thread from Library
-            if (state === 'STEP_CREATE_THREAD') {
-                updateStatusBanner("Opening Library thread creator...");
+            // STEP 1: Paste Sample Text on / and Submit
+            if (state === 'STEP_SUBMIT_SAMPLE') {
+                updateStatusBanner("Pasting sample chapter...");
+                console.log("[ReadOmni-Workflow] [STEP 1] Submitting sample text on homepage...");
 
-                if (window.location.pathname !== '/library') {
-                    window.location.href = '/library';
+                if (window.location.pathname !== '/' || window.location.search !== '') {
+                    window.location.href = '/';
                     return;
                 }
 
-                const newThreadBtn = await waitForElement('button', 'New thread', false, 10000);
-                reactClick(newThreadBtn);
-                await sleepWithAbort(500);
+                const mainTextarea = await waitForElement('textarea', null, false, 10000);
+                setReactInputValue(mainTextarea, SAMPLE_TEXT);
+                await sleepWithAbort(400);
 
-                const emptyThreadBtn = await waitForElement('button', 'Empty thread', false, 8000);
-                sessionStorage.setItem(STATE_KEY, 'STEP_GLOSSARY_TAB');
-                reactClick(emptyThreadBtn);
+                const submitBtn = await waitForElement('button[type="submit"]:not(:disabled), form button[type="submit"]', null, false, 8000);
+                sessionStorage.setItem(STATE_KEY, 'STEP_WAIT_TRANSLATION');
+                reactClick(submitBtn);
 
-                emptyThreadBtn.disabled = true;
-                emptyThreadBtn.style.pointerEvents = 'none';
+                updateStatusBanner("Translating sample chapter...");
+                console.log("[ReadOmni-Workflow] [STEP 1] Submitted. Waiting for translation page...");
 
-                updateStatusBanner("Waiting for new thread page...");
-                const navStart = Date.now();
-                while (!window.location.pathname.startsWith('/thread/') && Date.now() - navStart < 15000) {
+                const transWait = Date.now();
+                while (!window.location.pathname.startsWith('/translation/') && Date.now() - transWait < 18000) {
                     await sleepWithAbort(250);
                 }
 
-                if (!window.location.pathname.startsWith('/thread/')) {
-                    throw new Error("Navigation to created thread timed out.");
-                }
+                state = 'STEP_WAIT_TRANSLATION';
+                await sleepWithAbort(400);
+            }
 
-                const createdId = window.location.pathname.match(/\/thread\/([a-zA-Z0-9-]+)/)?.[1];
+            // STEP 1.5: Wait for translation view to load and capture the Thread ID
+            if (state === 'STEP_WAIT_TRANSLATION') {
+                updateStatusBanner("Waiting for translation to complete...");
+                console.log("[ReadOmni-Workflow] [STEP 1.5] Waiting for translation and thread link...");
+
+                // Find the breadcrumb/button link that leads to the thread
+                const threadLink = await waitForElement('a[href*="/thread/"]', null, false, 35000);
+                const targetHref = threadLink.href;
+                const createdId = targetHref.match(/\/thread\/([a-zA-Z0-9-]+)/)?.[1];
+
                 if (createdId) {
                     sessionStorage.setItem(TARGET_THREAD_ID_KEY, createdId);
                     console.log(`[ReadOmni-Workflow] Locked to target thread ID: ${createdId}`);
+                }
+
+                sessionStorage.setItem(STATE_KEY, 'STEP_GLOSSARY_TAB');
+                updateStatusBanner("Opening created thread...");
+                reactClick(threadLink);
+
+                await sleepWithAbort(1000);
+                if (window.location.pathname.includes('/translation/')) {
+                    window.location.href = targetHref;
+                    return;
                 }
 
                 state = 'STEP_GLOSSARY_TAB';
@@ -610,7 +631,6 @@
             return;
         }
 
-        // Avoid duplicate injections if already placed inside a valid container
         const existingBtn = document.getElementById('ro-workflow-btn');
         if (existingBtn && existingBtn.parentElement && existingBtn.parentElement !== document.body) {
             return;
@@ -618,8 +638,6 @@
         if (existingBtn) {
             existingBtn.remove();
         }
-
-        const isMobile = window.innerWidth < 768;
 
         const btn = document.createElement('button');
         btn.id = 'ro-workflow-btn';
@@ -640,7 +658,6 @@
                 return;
             }
 
-            // Fallback: Embed inside the form's bottom action bar
             const formToolbar = document.querySelector('form .flex.items-center.justify-between') ||
             document.querySelector('form .flex.items-center.gap-0\\.5');
             if (formToolbar) {
@@ -652,14 +669,12 @@
 
         // 2. On /library
         if (isLibrary) {
-            // Desktop: Place beside "New thread" button
             const newThreadBtn = Array.from(document.querySelectorAll('button')).find(b => b.textContent.includes('New thread'));
             if (newThreadBtn && newThreadBtn.parentElement) {
                 newThreadBtn.parentElement.insertBefore(btn, newThreadBtn);
                 return;
             }
 
-            // Mobile: Place in the toolbar next to search/filters
             const searchToolbar = document.querySelector('.sticky .flex.flex-wrap.items-center') ||
             document.querySelector('.container .flex.flex-wrap.items-center');
             if (searchToolbar) {
@@ -670,7 +685,7 @@
         }
     }
 
-    // Debounced Observer for URL changes
+    // Debounced Observer for URL and DOM changes
     let lastUrl = location.href;
     let observerTimeout = null;
 
