@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ReadOmni Chapters ZIP & EPUB Downloader
 // @namespace    https://github.com/tiklii/userscripts
-// @version      42
+// @version      43
 // @description  Download chapters from readomni
 // @author       tiklii
 // @match        https://app.readomni.com/*
@@ -12,9 +12,18 @@
 (function () {
     'use strict';
 
+    // =========================================================================
+    // USER CONFIGURATION (Easily editable by hand)
+    // =========================================================================
+    // The script checks the very first (oldest) chapter for this string in its raw text.
+    // If found, that chapter is recognized as placeholder/sample text and ignored.
+    const SAMPLE_CHAPTER_MARKER = '第十五章 死事';
+    // =========================================================================
+
     const STATE_KEY = 'ro_bulk_v23_state';
     const LOCK_KEY = 'ro_v23_active_tab_lock';
     const PREF_GLOSSARY_KEY = 'ro_include_glossary_opt';
+    const PREF_MODE_KEY = 'ro_pref_download_mode';
     const IDB_NAME = 'ro_app_db';
     const STORE_GLOSSARY = 'glossary_cache';
     const STORE_CHAPTERS = 'chapters_cache';
@@ -614,7 +623,7 @@
         const dateStr = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
 
         if (state.logs && state.logs.length > 0) {
-            const logContent = "--- READOMNI DEBUG LOG v42 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
+            const logContent = "--- READOMNI DEBUG LOG v43 ---\n" + navigator.userAgent + "\n\n" + state.logs.join('\n');
             dl.log = { url: URL.createObjectURL(new Blob([logContent], { type: 'text/plain' })), name: `readomni_debug_${new Date().getTime()}.txt` };
         }
 
@@ -626,11 +635,11 @@
         let finalFiles = state.mode === 'selective' ? [...loadedChapters] : [...loadedChapters].reverse();
 
         // Check and ignore the sample text chapter on the very first (oldest) chapter
-        if (finalFiles.length > 0) {
+        if (finalFiles.length > 0 && SAMPLE_CHAPTER_MARKER) {
             const firstChap = finalFiles[0];
             const rawCheckString = (firstChap.rawChapterTitle || "") + " " + (firstChap.rawContent || "") + " " + (firstChap.rawTitle || "");
-            if (rawCheckString.includes("第十五章 死事") || rawCheckString.includes("第99887章") || rawCheckString.includes("牌位")) {
-                logDebug(state, "Found sample text chapter ('第十五章 死事'). Removing from start.");
+            if (rawCheckString.includes(SAMPLE_CHAPTER_MARKER)) {
+                logDebug(state, `Found sample text chapter ('${SAMPLE_CHAPTER_MARKER}'). Removing from start.`);
                 finalFiles.shift();
             }
         }
@@ -944,6 +953,9 @@
         const savedGlossaryPref = localStorage.getItem(PREF_GLOSSARY_KEY);
         const includeGlossaryDefault = savedGlossaryPref !== null ? savedGlossaryPref === 'true' : true;
 
+        // Default to 'sequential', remember user's last selected choice
+        const savedModePref = localStorage.getItem(PREF_MODE_KEY) || 'sequential';
+
         const overlay = document.createElement('div');
         overlay.id = 'ro-setup-modal';
         Object.assign(overlay.style, {
@@ -962,8 +974,8 @@
 
         <label style="display: block; margin: 0 0 8px; font-weight: 600; font-size: 14px;">Download Mode:</label>
         <select id="ro-setup-mode" style="width: 100%; padding: 10px; border-radius: 6px; background: var(--input, #f3f4f6); color: var(--foreground, #111); border: 1px solid var(--border, #ccc); margin-bottom: 16px; font-size: 14px;">
-        <option value="selective">Selective (Custom Selection & Reorder)</option>
-        <option value="sequential">Sequential (Latest to First)</option>
+        <option value="sequential" ${savedModePref === 'sequential' ? 'selected' : ''}>Sequential (Latest to First)</option>
+        <option value="selective" ${savedModePref === 'selective' ? 'selected' : ''}>Selective (Custom Selection & Reorder)</option>
         </select>
 
         <div style="margin-bottom: 24px;">
@@ -988,6 +1000,8 @@
             const chosenTitle = document.getElementById('ro-setup-title').value.trim() || 'ReadOmni_Book';
             const includeGlossary = document.getElementById('ro-setup-glossary').checked;
 
+            // Remember user preferences
+            localStorage.setItem(PREF_MODE_KEY, mode);
             localStorage.setItem(PREF_GLOSSARY_KEY, String(includeGlossary));
 
             const startBtn = document.getElementById('ro-btn-start');
@@ -1052,7 +1066,7 @@
  includeGlossary: includeGlossary,
  threadName: customTitle, count: 1, retryCount: 0, logs: []
         };
-        logDebug(state, `--- NEW RUN INITIALIZED (V42 Sequential) ---`);
+        logDebug(state, `--- NEW RUN INITIALIZED (V43 Sequential) ---`);
         localStorage.setItem(STATE_KEY, JSON.stringify(state));
         const runUrl = new URL(firstLink.href, window.location.origin);
         runUrl.searchParams.set('ro_start_download', 'true');
@@ -1207,6 +1221,10 @@
 
             if (isDescending) {
                 rawList.reverse();
+            }
+
+            if (rawList.length > 0 && SAMPLE_CHAPTER_MARKER && rawList[0].title.includes(SAMPLE_CHAPTER_MARKER)) {
+                rawList.shift();
             }
 
             showSelectiveUI(rawList, threadName, window.location.href, includeGlossary);
@@ -1538,7 +1556,7 @@
  threadName: chosenTitle, count: 1, retryCount: 0, logs: [],
  queue: finalQueue, queueIndex: 0
                 };
-                logDebug(state, `--- NEW RUN INITIALIZED (V42 Selective) Total: ${finalQueue.length} ---`);
+                logDebug(state, `--- NEW RUN INITIALIZED (V43 Selective) Total: ${finalQueue.length} ---`);
                 localStorage.setItem(STATE_KEY, JSON.stringify(state));
 
                 const runUrl = new URL(finalQueue[0].url, window.location.origin);
