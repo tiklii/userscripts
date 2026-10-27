@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ReadOmni Auto-Workflow
 // @namespace    https://github.com/tiklii/userscripts
-// @version      2.4
-// @description  Automates ReadOmni thread initialization via sample text, chunked multi-file glossary importing (4000 terms max), and renaming with guardrails and live controls.
+// @version      2.5
+// @description  Automates ReadOmni thread initialization via sample text, font size adjustment (18px), chunked glossary importing (4000 max), and renaming with guardrails.
 // @author       tiklii
 // @match        https://app.readomni.com/*
 // @grant        none
@@ -21,6 +21,7 @@
     const TIMESTAMP_KEY = 'ro_wf_timestamp';
     const MAX_WORKFLOW_AGE_MS = 5 * 60 * 1000; // 5 minute expiration
     const GLOSSARY_CHUNK_SIZE = 4000; // Chunk threshold for large glossaries
+    const TARGET_FONT_SIZE = 18;
 
     let isRunning = false;
     let isAborted = false;
@@ -355,7 +356,7 @@
             const nextName = sessionStorage.getItem(NAME_KEY);
             const lockedThreadId = sessionStorage.getItem(TARGET_THREAD_ID_KEY);
 
-            // Guardrail: Strict Thread ID check once thread ID is established
+            // Guardrail: Strict Thread ID check once established
             const currentThreadId = window.location.pathname.match(/\/thread\/([a-zA-Z0-9-]+)/)?.[1];
             if (lockedThreadId && currentThreadId && currentThreadId !== lockedThreadId) {
                 console.warn(`[ReadOmni-Workflow] SAFETY ABORT: Opened thread (${currentThreadId}) !== target thread (${lockedThreadId}). Aborting.`);
@@ -393,12 +394,11 @@
                 await sleepWithAbort(400);
             }
 
-            // STEP 1.5: Wait for translation view to load and capture the Thread ID
+            // STEP 1.5: Translation View -> Adjust Font Size to 18 -> Navigate to Thread
             if (state === 'STEP_WAIT_TRANSLATION') {
                 updateStatusBanner("Waiting for translation to complete...");
-                console.log("[ReadOmni-Workflow] [STEP 1.5] Waiting for translation and thread link...");
+                console.log("[ReadOmni-Workflow] [STEP 1.5] Waiting for translation view...");
 
-                // Find the breadcrumb/button link that leads to the thread
                 const threadLink = await waitForElement('a[href*="/thread/"]', null, false, 35000);
                 const targetHref = threadLink.href;
                 const createdId = targetHref.match(/\/thread\/([a-zA-Z0-9-]+)/)?.[1];
@@ -406,6 +406,62 @@
                 if (createdId) {
                     sessionStorage.setItem(TARGET_THREAD_ID_KEY, createdId);
                     console.log(`[ReadOmni-Workflow] Locked to target thread ID: ${createdId}`);
+                }
+
+                // Adjust Font Size to 18 in Settings -> Appearance
+                try {
+                    console.log("[ReadOmni-Workflow] [STEP 1.5] Checking Appearance font size...");
+                    const settingsBtn = document.querySelector('button[aria-label="Settings"]') ||
+                    document.querySelector('button[aria-keyshortcuts="Control+Shift+,"]') ||
+                    document.querySelector('svg.lucide-settings')?.closest('button');
+
+                    if (settingsBtn) {
+                        reactClick(settingsBtn);
+                        await sleepWithAbort(500);
+
+                        const appearanceBtn = await waitForElement('button', 'Appearance', false, 4000);
+                        reactClick(appearanceBtn);
+                        await sleepWithAbort(400);
+
+                        const fontRow = Array.from(document.querySelectorAll('div')).find(el => {
+                            return el.textContent.trim().startsWith('Font size') && el.querySelector('input');
+                        });
+                        const fontInput = fontRow ? fontRow.querySelector('input') : document.querySelector('input[inputmode="numeric"]');
+
+                        if (fontInput) {
+                            const currentFontSize = parseInt(fontInput.value, 10);
+                            if (!isNaN(currentFontSize) && currentFontSize < TARGET_FONT_SIZE) {
+                                console.log(`[ReadOmni-Workflow] Current font size is ${currentFontSize}. Adjusting to ${TARGET_FONT_SIZE}...`);
+                                const plusBtn = fontRow ?
+                                (fontRow.querySelector('button[aria-label="Increase value"]') || fontRow.querySelectorAll('button')[1]) :
+                                document.querySelector('button[aria-label="Increase value"]');
+
+                                if (plusBtn) {
+                                    const clicksNeeded = TARGET_FONT_SIZE - currentFontSize;
+                                    for (let i = 0; i < clicksNeeded; i++) {
+                                        reactClick(plusBtn);
+                                        await sleepWithAbort(120);
+                                    }
+                                    await sleepWithAbort(250);
+                                }
+                            } else {
+                                console.log(`[ReadOmni-Workflow] Font size is already ${currentFontSize}.`);
+                            }
+                        }
+
+                        // Close settings modal
+                        const closeBtn = document.querySelector('button[aria-label="Close settings"]');
+                        if (closeBtn) {
+                            reactClick(closeBtn);
+                        } else {
+                            document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+                        }
+                        await sleepWithAbort(400);
+                    }
+                } catch (fontErr) {
+                    console.warn("[ReadOmni-Workflow] Font size adjustment skipped or encountered error:", fontErr);
+                    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+                    await sleepWithAbort(300);
                 }
 
                 sessionStorage.setItem(STATE_KEY, 'STEP_GLOSSARY_TAB');
@@ -639,6 +695,8 @@
             existingBtn.remove();
         }
 
+        const isMobile = window.innerWidth < 768;
+
         const btn = document.createElement('button');
         btn.id = 'ro-workflow-btn';
         btn.type = 'button';
@@ -646,7 +704,7 @@
         btn.innerHTML = '🚀<span class="ml-1.5 font-medium">Workflow</span>';
         btn.className = "inline-flex items-center justify-center whitespace-nowrap rounded-md text-xs sm:text-sm font-medium transition-[color,box-shadow] border border-border bg-card shadow-xs hover:bg-accent hover:text-accent-foreground h-8 sm:h-9 px-2.5 sm:px-3 gap-1 cursor-pointer";
 
-        // 1. On / (Translate Home): Embed cleanly in the H1 heading row above the textarea
+        // 1. On / (Translate Home): Embed in the H1 heading row right above the textarea
         if (isCleanHome) {
             const homeHeading = document.querySelector('h1:has(button[aria-label*="Thread"])') ||
             Array.from(document.querySelectorAll('h1')).find(h => h.textContent.includes('Translate into'));
